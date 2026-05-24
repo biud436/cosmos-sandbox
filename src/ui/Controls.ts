@@ -58,7 +58,18 @@ export class Controls {
     this.buildDistributionFolder();
     this.buildBondingFolder();
     this.buildFusionFolder();
+    this.buildCosmologyFolder();
     this.applyPreset(PRESETS[0]);
+  }
+
+  private buildCosmologyFolder(): void {
+    const folder = this.gui.addFolder('우주론');
+    folder.add(this.sim, 'hubbleRate', 0, 0.2, 0.001).name('Hubble H').listen();
+    folder.add(this.sim, 'openBoundary').name('Open boundary').listen();
+    folder.add(this.sim, 'starFormationEnabled').name('Star formation').listen();
+    folder.add(this.sim, 'starFormationRadius', 0.3, 3.0, 0.05).name('SF radius').listen();
+    folder.add(this.sim, 'starFormationCount', 4, 80, 1).name('SF threshold').listen();
+    folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
   }
 
   private buildBondingFolder(): void {
@@ -168,8 +179,13 @@ export class Controls {
     this.sim.thermostatCoolOnly = preset.thermostatCoolOnly ?? false;
     this.sim.initialPattern = preset.initialPattern ?? 'uniform';
     if (preset.initialClumpCount !== undefined) this.sim.initialClumpCount = preset.initialClumpCount;
+    this.sim.hubbleRate = preset.hubbleRate ?? 0;
+    this.sim.openBoundary = preset.openBoundary ?? false;
+    this.sim.starFormationEnabled = preset.starFormationEnabled ?? false;
+    if (preset.starFormationRadius !== undefined) this.sim.starFormationRadius = preset.starFormationRadius;
+    if (preset.starFormationCount !== undefined) this.sim.starFormationCount = preset.starFormationCount;
     this.scene.setRenderMode(preset.renderMode);
-    this.scene.setEnvironmentVisible(preset.showEnvironment);
+    this.scene.setEnvironmentVisible(preset.showEnvironment && !this.sim.openBoundary);
 
     for (const sp of SPECIES) this.distribution[sp.name] = preset.distribution[sp.name] ?? 0;
     this.suppressApply = true;

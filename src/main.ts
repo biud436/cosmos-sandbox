@@ -27,6 +27,11 @@ sim.onFusion = (event) => {
   }
 };
 
+sim.onStarFormation = (position, atoms) => {
+  scene.pulseOrigin(position);
+  layout.log(`★ Star formed from ${atoms} atoms`, 'event');
+};
+
 const controls = new Controls(
   sim,
   layout.guiHost,

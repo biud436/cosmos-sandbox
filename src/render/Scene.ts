@@ -333,7 +333,8 @@ export class Scene {
         this.gasColors[i * 3 + 0] = r;
         this.gasColors[i * 3 + 1] = g;
         this.gasColors[i * 3 + 2] = b;
-        this.gasSizes[i] = sp.sigma * 4.5;
+        const sizeFactor = sp.name === 'DM' ? 12 : 4.5;
+        this.gasSizes[i] = sp.sigma * sizeFactor;
       }
       this.gasGeom.setDrawRange(0, cap);
       (this.gasGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;

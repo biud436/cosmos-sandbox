@@ -1,3 +1,4 @@
+import { BarnesHut } from './BarnesHut';
 import { SpatialGrid } from './SpatialGrid';
 import { K_BOLTZMANN_REDUCED, SPECIES, Species, T_REDUCED_TO_KELVIN } from './types';
 
@@ -16,6 +17,10 @@ export interface SimStats {
   fusionEvents: number;
   simTime: number;
   bondCount: number;
+  starsFormed: number;
+  scaleFactor: number;
+  darkMass: number;
+  baryonMass: number;
 }
 
 export interface FusionEvent {
@@ -76,6 +81,16 @@ export class Simulator {
   windX = 0;
   selfGravity = 0;
   selfGravitySoftening = 0.6;
+  bhTheta = 0.6;
+  hubbleRate = 0;
+  scaleFactor = 1.0;
+  openBoundary = false;
+  starFormationEnabled = false;
+  starFormationRadius = 0.9;
+  starFormationCount = 14;
+  starFormationCooldown = 0.5;
+  private starFormationTimer = 0;
+  private starsFormed = 0;
   bondingEnabled = false;
   bondStiffness = 80;
   bondFormFactor = 1.2;
@@ -90,8 +105,12 @@ export class Simulator {
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
   onFusion: ((event: FusionEvent) => void) | null = null;
+  onStarFormation: ((position: [number, number, number], atoms: number) => void) | null = null;
 
   private grid: SpatialGrid;
+  private bh: BarnesHut;
+  private massCache: Float64Array;
+  private bhAccel: [number, number, number] = [0, 0, 0];
   private potentialEnergy = 0;
   private pair: PairParams[];
   private readonly numSpecies: number;
@@ -126,6 +145,8 @@ export class Simulator {
     this.numSpecies = SPECIES.length;
     this.pair = this.buildPairTable();
     this.fusedMark = new Uint8Array(opts.maxParticles);
+    this.bh = new BarnesHut(opts.maxParticles, this.bhTheta, this.selfGravitySoftening);
+    this.massCache = new Float64Array(opts.maxParticles);
 
     this.maxBonds = opts.maxParticles * 4;
     this.bondI = new Int32Array(this.maxBonds);
@@ -162,6 +183,9 @@ export class Simulator {
     this.bondLen = 0;
     this.bondCount.fill(0);
     this.effectors.length = 0;
+    this.starsFormed = 0;
+    this.starFormationTimer = 0;
+    this.scaleFactor = 1.0;
     const half = this.boxHalf * 0.9;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
@@ -264,10 +288,110 @@ export class Simulator {
       this.velocities[i * 3 + 2] += this.forces[i * 3 + 2] * inv2m * dt;
     }
 
-    this.applyBoundary();
+    if (!this.openBoundary) this.applyBoundary();
     this.applyThermostat(dt);
     this.integrateEffectors(dt);
+
+    if (this.hubbleRate > 0) this.applyHubble(dt);
+
+    if (this.starFormationEnabled) {
+      this.starFormationTimer += dt;
+      if (this.starFormationTimer >= this.starFormationCooldown) {
+        this.starFormationTimer = 0;
+        this.checkStarFormation();
+      }
+    }
+
     this.simTime += dt;
+  }
+
+  private applyHubble(dt: number): void {
+    const factor = 1 + this.hubbleRate * dt;
+    this.scaleFactor *= factor;
+    const drag = 1 / factor;
+    for (let i = 0; i < this.count; i++) {
+      this.positions[i * 3 + 0] *= factor;
+      this.positions[i * 3 + 1] *= factor;
+      this.positions[i * 3 + 2] *= factor;
+      this.velocities[i * 3 + 0] *= drag;
+      this.velocities[i * 3 + 1] *= drag;
+      this.velocities[i * 3 + 2] *= drag;
+    }
+    for (const e of this.effectors) {
+      e.x *= factor;
+      e.y *= factor;
+      e.z *= factor;
+    }
+  }
+
+  private checkStarFormation(): void {
+    const R = this.starFormationRadius;
+    const R2 = R * R;
+    const threshold = this.starFormationCount;
+    const claimed = new Uint8Array(this.count);
+    const removed: number[] = [];
+
+    for (let i = 0; i < this.count; i++) {
+      if (claimed[i]) continue;
+      const si = this.species[i];
+      if (si !== 0 && si !== 4) continue;
+      const xi = this.positions[i * 3 + 0];
+      const yi = this.positions[i * 3 + 1];
+      const zi = this.positions[i * 3 + 2];
+      const cluster: number[] = [i];
+      for (let j = 0; j < this.count; j++) {
+        if (j === i || claimed[j]) continue;
+        if (this.species[j] !== si) continue;
+        const dx = this.positions[j * 3 + 0] - xi;
+        const dy = this.positions[j * 3 + 1] - yi;
+        const dz = this.positions[j * 3 + 2] - zi;
+        if (dx * dx + dy * dy + dz * dz < R2) cluster.push(j);
+      }
+      if (cluster.length < threshold) continue;
+      for (const idx of cluster) claimed[idx] = 1;
+      this.spawnStarFromCluster(cluster);
+      for (const idx of cluster) removed.push(idx);
+    }
+
+    if (removed.length === 0) return;
+    removed.sort((a, b) => b - a);
+    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
+  }
+
+  private spawnStarFromCluster(indices: number[]): void {
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    let vx = 0;
+    let vy = 0;
+    let vz = 0;
+    let total = 0;
+    for (const i of indices) {
+      const m = SPECIES[this.species[i]].mass;
+      cx += this.positions[i * 3 + 0] * m;
+      cy += this.positions[i * 3 + 1] * m;
+      cz += this.positions[i * 3 + 2] * m;
+      vx += this.velocities[i * 3 + 0] * m;
+      vy += this.velocities[i * 3 + 1] * m;
+      vz += this.velocities[i * 3 + 2] * m;
+      total += m;
+    }
+    if (total <= 0) return;
+    cx /= total;
+    cy /= total;
+    cz /= total;
+    vx /= total;
+    vy /= total;
+    vz /= total;
+
+    const eff = this.addEffector('star', cx, cy, cz);
+    eff.vx = vx;
+    eff.vy = vy;
+    eff.vz = vz;
+    eff.strength = Math.min(180, total * 25);
+    eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
+    this.starsFormed++;
+    this.onStarFormation?.([cx, cy, cz], indices.length);
   }
 
   private integrateEffectors(dt: number): void {
@@ -770,30 +894,24 @@ export class Simulator {
   private applySelfGravity(): void {
     const n = this.count;
     const G = this.selfGravity;
-    const eps2 = this.selfGravitySoftening * this.selfGravitySoftening;
-    for (let i = 0; i < n - 1; i++) {
-      const mi = SPECIES[this.species[i]].mass;
-      const xi = this.positions[i * 3 + 0];
-      const yi = this.positions[i * 3 + 1];
-      const zi = this.positions[i * 3 + 2];
-      for (let j = i + 1; j < n; j++) {
-        const mj = SPECIES[this.species[j]].mass;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        const r2 = dx * dx + dy * dy + dz * dz + eps2;
-        const invR = 1 / Math.sqrt(r2);
-        const fmag = (G * mi * mj) * invR * invR * invR;
-        const fx = fmag * dx;
-        const fy = fmag * dy;
-        const fz = fmag * dz;
-        this.forces[i * 3 + 0] += fx;
-        this.forces[i * 3 + 1] += fy;
-        this.forces[i * 3 + 2] += fz;
-        this.forces[j * 3 + 0] -= fx;
-        this.forces[j * 3 + 1] -= fy;
-        this.forces[j * 3 + 2] -= fz;
-      }
+
+    for (let i = 0; i < n; i++) this.massCache[i] = SPECIES[this.species[i]].mass;
+    this.bh.theta2 = this.bhTheta * this.bhTheta;
+    this.bh.softening2 = this.selfGravitySoftening * this.selfGravitySoftening;
+
+    const effectiveHalf = this.boxHalf * this.scaleFactor;
+    this.bh.build(this.positions, this.massCache, n, effectiveHalf);
+
+    const out = this.bhAccel;
+    for (let i = 0; i < n; i++) {
+      const px = this.positions[i * 3 + 0];
+      const py = this.positions[i * 3 + 1];
+      const pz = this.positions[i * 3 + 2];
+      this.bh.computeAcceleration(px, py, pz, i, G, out);
+      const m = this.massCache[i];
+      this.forces[i * 3 + 0] += m * out[0];
+      this.forces[i * 3 + 1] += m * out[1];
+      this.forces[i * 3 + 2] += m * out[2];
     }
   }
 
@@ -914,6 +1032,14 @@ export class Simulator {
     const ke = this.kineticEnergy();
     const dof = Math.max(1, 3 * this.count);
     const tReduced = (2 * ke) / (dof * K_BOLTZMANN_REDUCED);
+    let darkMass = 0;
+    let baryonMass = 0;
+    for (let i = 0; i < this.count; i++) {
+      const sp = SPECIES[this.species[i]];
+      if (sp.name === 'DM') darkMass += sp.mass;
+      else baryonMass += sp.mass;
+    }
+
     return {
       count: this.count,
       kineticEnergy: ke,
@@ -923,6 +1049,10 @@ export class Simulator {
       fusionEvents: this.fusionEvents,
       simTime: this.simTime,
       bondCount: this.bondLen,
+      starsFormed: this.starsFormed,
+      scaleFactor: this.scaleFactor,
+      darkMass,
+      baryonMass,
     };
   }
 }

@@ -26,7 +26,7 @@
       #shell {
         display: grid; height: 100vh; width: 100vw;
         grid-template-columns: 220px 1fr 340px;
-        grid-template-rows: 40px 1fr 160px;
+        grid-template-rows: 40px 1fr 190px;
         grid-template-areas:
           "toolbar toolbar toolbar"
           "left    center  right"
@@ -104,7 +104,7 @@
       }
 
       .stats-grid {
-        display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px 16px;
+        display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px 14px;
       }
       .stat { display: flex; flex-direction: column; }
       .stat .label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -215,6 +215,7 @@
         <div class="panel-body">
           <div class="stats-grid">
             <div class="stat"><span class="label">우주시간</span><span class="value ok"><b id="s-time">0 년</b></span></div>
+            <div class="stat"><span class="label">a(t) 스케일</span><span class="value"><b id="s-a">1.000</b></span></div>
             <div class="stat"><span class="label">Time scale</span><span class="value"><b id="s-scale">×1</b></span></div>
             <div class="stat"><span class="label">T target</span><span class="value"><b id="s-ttarget">—</b> K</span></div>
             <div class="stat"><span class="label">T measured</span><span class="value"><b id="s-tmeas">—</b> K</span></div>
@@ -223,6 +224,9 @@
             <div class="stat"><span class="label">Potential E</span><span class="value"><b id="s-pe">—</b></span></div>
             <div class="stat"><span class="label">Bonds</span><span class="value"><b id="s-bonds">0</b></span></div>
             <div class="stat"><span class="label">Effectors</span><span class="value"><b id="s-bh">0</b></span></div>
+            <div class="stat"><span class="label">★ Stars formed</span><span class="value ok"><b id="s-stars">0</b></span></div>
+            <div class="stat"><span class="label">DM mass</span><span class="value"><b id="s-dm">0</b></span></div>
+            <div class="stat"><span class="label">Baryon mass</span><span class="value"><b id="s-bary">0</b></span></div>
             <div class="stat"><span class="label">Fusion events</span><span class="value warn"><b id="s-fus">0</b></span></div>
           </div>
           <div class="log" id="event-log"></div>

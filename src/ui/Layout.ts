@@ -25,6 +25,10 @@ export class Layout {
   private readonly sFus = document.getElementById('s-fus')!;
   private readonly sBonds = document.getElementById('s-bonds')!;
   private readonly sBH = document.getElementById('s-bh')!;
+  private readonly sStars = document.getElementById('s-stars')!;
+  private readonly sA = document.getElementById('s-a')!;
+  private readonly sDM = document.getElementById('s-dm')!;
+  private readonly sBary = document.getElementById('s-bary')!;
   private readonly viewport = document.getElementById('viewport')!;
 
   private hierRows = new Map<string, { dot: HTMLElement; name: HTMLElement; count: HTMLElement; row: HTMLElement }>();
@@ -155,6 +159,10 @@ export class Layout {
     this.sFus.textContent = String(stats.fusionEvents);
     this.sBonds.textContent = String(stats.bondCount);
     this.sBH.textContent = String(sim.effectors.length);
+    this.sStars.textContent = String(stats.starsFormed);
+    this.sA.textContent = stats.scaleFactor.toFixed(3);
+    this.sDM.textContent = stats.darkMass.toFixed(0);
+    this.sBary.textContent = stats.baryonMass.toFixed(1);
   }
 
   setDropHighlight(active: boolean): void {

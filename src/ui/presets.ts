@@ -10,6 +10,11 @@ export interface Preset {
   thermostatCoolOnly?: boolean;
   initialPattern?: 'uniform' | 'clumpy';
   initialClumpCount?: number;
+  hubbleRate?: number;
+  openBoundary?: boolean;
+  starFormationEnabled?: boolean;
+  starFormationRadius?: number;
+  starFormationCount?: number;
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
   showEnvironment: boolean;
@@ -35,6 +40,11 @@ export const PRESETS: Preset[] = [
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
     initialClumpCount: 6,
+    hubbleRate: 0.04,
+    openBoundary: true,
+    starFormationEnabled: true,
+    starFormationRadius: 1.0,
+    starFormationCount: 14,
   },
   {
     name: '공기 흐름',
