@@ -747,7 +747,7 @@ export class Scene {
       const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
       const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
       const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
-      if (e >= 0.97) continue;
+      if (e >= 0.85) continue;
 
       const eHatX = e > 1e-6 ? evx / e : rx / rMag;
       const eHatY = e > 1e-6 ? evy / e : ry / rMag;

@@ -90,6 +90,9 @@ export class Controls {
     folder.add(this.sim, 'maxParticleSpeed', 0, 40, 0.5).name('입자 속도 캡').listen();
     folder.add(this.sim, 'maxEffectorSpeed', 0, 30, 0.5).name('효과기 속도 캡').listen();
     folder.add(this.sim, 'supernovaMassThreshold', 50, 500, 10).name('초신성 질량 임계').listen();
+    folder.add(this.sim, 'supernovaFullDisruptionProb', 0, 1, 0.05).name('초신성 완전붕괴 확률').listen();
+    folder.add(this.sim, 'supernovaEjectaSpeed', 0, 10, 0.1).name('초신성 분출 속도').listen();
+    folder.add(this.sim, 'supernovaEjectaCountFactor', 0, 1, 0.01).name('초신성 분출 입자 계수').listen();
   }
 
   private buildCosmologyFolder(): void {

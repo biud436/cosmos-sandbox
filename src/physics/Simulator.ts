@@ -111,7 +111,7 @@ export class Simulator {
   bondStiffness = 80;
   bondFormFactor = 1.2;
   bondBreakFactor = 3.0;
-  blackHoleG = 0.9;
+  blackHoleG = 0.35;
   starG = 2;
   starHeatRate = 0.4;
   repulsorG = 4;
@@ -130,6 +130,9 @@ export class Simulator {
   onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
   onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
   supernovaMassThreshold = 220;
+  supernovaFullDisruptionProb = 0.25;
+  supernovaEjectaSpeed = 3.5;
+  supernovaEjectaCountFactor = 0.18;
   maxParticleSpeed = 10;
   maxEffectorSpeed = 6;
 
@@ -1045,12 +1048,17 @@ export class Simulator {
     const vz = (a.vz * ma + b.vz * mb) / total;
 
     if (total > this.supernovaMassThreshold) {
-      const bh = this.addEffector('blackhole', mx, my, mz);
-      bh.vx = vx;
-      bh.vy = vy;
-      bh.vz = vz;
-      bh.strength = total * 0.55;
-      bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
+      const fullDisruption = Math.random() < this.supernovaFullDisruptionProb;
+      const ejectaFraction = fullDisruption ? 0.95 : 0.45;
+      this.ejectSupernovaParticles(mx, my, mz, vx, vy, vz, total * ejectaFraction);
+      if (!fullDisruption) {
+        const bh = this.addEffector('blackhole', mx, my, mz);
+        bh.vx = vx;
+        bh.vy = vy;
+        bh.vz = vz;
+        bh.strength = total * (1 - ejectaFraction);
+        bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
+      }
       this.onSupernova?.([mx, my, mz], total);
       return true;
     }
@@ -1065,6 +1073,42 @@ export class Simulator {
     a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
     this.onStellarMerger?.([mx, my, mz], total);
     return false;
+  }
+
+  private ejectSupernovaParticles(x: number, y: number, z: number, vx: number, vy: number, vz: number, ejectaMass: number): void {
+    const heId = SPECIES.findIndex((s) => s.name === 'He');
+    const n2Id = SPECIES.findIndex((s) => s.name === 'N₂');
+    const o2Id = SPECIES.findIndex((s) => s.name === 'O₂');
+    const dustId = SPECIES.findIndex((s) => s.name === 'Dust');
+    const speciesPool: number[] = [];
+    if (heId >= 0) { speciesPool.push(heId, heId, heId); }
+    if (n2Id >= 0) { speciesPool.push(n2Id, n2Id); }
+    if (o2Id >= 0) { speciesPool.push(o2Id, o2Id); }
+    if (dustId >= 0) { speciesPool.push(dustId); }
+    if (speciesPool.length === 0) return;
+
+    const count = Math.max(4, Math.min(40, Math.floor(ejectaMass * this.supernovaEjectaCountFactor)));
+    const baseSpeed = this.supernovaEjectaSpeed;
+    for (let k = 0; k < count; k++) {
+      if (this.count >= this.maxParticles) return;
+      const u = Math.random() * 2 - 1;
+      const t = Math.random() * Math.PI * 2;
+      const s = Math.sqrt(Math.max(0, 1 - u * u));
+      const dx = s * Math.cos(t);
+      const dy = u;
+      const dz = s * Math.sin(t);
+      const sp = speciesPool[(Math.random() * speciesPool.length) | 0];
+      const r0 = 0.6 + Math.random() * 0.3;
+      const speed = baseSpeed * (0.7 + Math.random() * 0.6);
+      const i = this.count++;
+      this.species[i] = sp;
+      this.positions[i * 3 + 0] = x + dx * r0;
+      this.positions[i * 3 + 1] = y + dy * r0;
+      this.positions[i * 3 + 2] = z + dz * r0;
+      this.velocities[i * 3 + 0] = vx + dx * speed;
+      this.velocities[i * 3 + 1] = vy + dy * speed;
+      this.velocities[i * 3 + 2] = vz + dz * speed;
+    }
   }
 
   private consumeStar(bh: Effector, star: Effector): void {
@@ -1225,7 +1269,7 @@ export class Simulator {
     const G = this.blackHoleG;
     const eps2 = 0.6;
     const r2horizon = e.radius * e.radius;
-    const influence = e.radius * 3;
+    const influence = e.radius * 2;
     const r2influence = influence * influence;
     const fadeStart = influence * 0.85;
     const r2fade = fadeStart * fadeStart;
