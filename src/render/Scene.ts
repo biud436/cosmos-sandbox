@@ -324,17 +324,18 @@ export class Scene {
       for (let i = 0; i < cap; i++) {
         const s = sim.species[i];
         const sp = SPECIES[s];
+        const isDM = sp.name === 'DM';
         this.gasPositions[i * 3 + 0] = sim.positions[i * 3 + 0];
         this.gasPositions[i * 3 + 1] = sim.positions[i * 3 + 1];
         this.gasPositions[i * 3 + 2] = sim.positions[i * 3 + 2];
         const r = ((sp.color >> 16) & 0xff) / 255;
         const g = ((sp.color >> 8) & 0xff) / 255;
         const b = (sp.color & 0xff) / 255;
-        this.gasColors[i * 3 + 0] = r;
-        this.gasColors[i * 3 + 1] = g;
-        this.gasColors[i * 3 + 2] = b;
-        const sizeFactor = sp.name === 'DM' ? 12 : 4.5;
-        this.gasSizes[i] = sp.sigma * sizeFactor;
+        const dim = isDM ? 0.35 : 1.0;
+        this.gasColors[i * 3 + 0] = r * dim;
+        this.gasColors[i * 3 + 1] = g * dim;
+        this.gasColors[i * 3 + 2] = b * dim;
+        this.gasSizes[i] = sp.sigma * (isDM ? 5.0 : 4.5);
       }
       this.gasGeom.setDrawRange(0, cap);
       (this.gasGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;

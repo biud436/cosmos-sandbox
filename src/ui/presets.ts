@@ -11,10 +11,12 @@ export interface Preset {
   initialPattern?: 'uniform' | 'clumpy';
   initialClumpCount?: number;
   hubbleRate?: number;
+  hubbleDecay?: number;
   openBoundary?: boolean;
   starFormationEnabled?: boolean;
   starFormationRadius?: number;
   starFormationCount?: number;
+  starFormationCooldown?: number;
   initialBoundingRadius?: number;
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
@@ -26,27 +28,29 @@ export interface Preset {
 export const PRESETS: Preset[] = [
   {
     name: '빅뱅 (Big Bang)',
-    description: '뜨겁고 작은 점에서 시작 → 급팽창·냉각 → DM 헤일로 형성 → 가스 응집 → 첫 별 탄생.',
-    temperatureK: 3000,
+    description: '작고 차가운 종자에서 시작 → 팽창은 빠르게 감속 → DM 헤일로에 가스가 응집 → 첫 별 탄생.',
+    temperatureK: 30,
     gravity: 0,
     windX: 0,
-    selfGravity: 1.3,
+    selfGravity: 2.0,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 320, He: 60, DM: 480 },
+    distribution: { H: 400, He: 80, DM: 480 },
     renderMode: 'gas',
     showEnvironment: false,
-    initialTimeScale: 4,
-    yearsPerUnit: 100_000_000,
+    initialTimeScale: 1,
+    yearsPerUnit: 30_000_000,
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
-    initialClumpCount: 4,
-    initialBoundingRadius: 0.08,
-    hubbleRate: 0.18,
+    initialClumpCount: 5,
+    initialBoundingRadius: 0.12,
+    hubbleRate: 0.12,
+    hubbleDecay: 0.4,
     openBoundary: true,
     starFormationEnabled: true,
-    starFormationRadius: 0.9,
-    starFormationCount: 12,
+    starFormationRadius: 1.4,
+    starFormationCount: 8,
+    starFormationCooldown: 0.2,
   },
   {
     name: '우주 가스 구름',

@@ -84,12 +84,13 @@ export class Simulator {
   selfGravitySoftening = 0.6;
   bhTheta = 0.6;
   hubbleRate = 0;
+  hubbleDecay = 0;
   scaleFactor = 1.0;
   openBoundary = false;
   starFormationEnabled = false;
-  starFormationRadius = 0.9;
-  starFormationCount = 14;
-  starFormationCooldown = 0.5;
+  starFormationRadius = 1.4;
+  starFormationCount = 8;
+  starFormationCooldown = 0.2;
   private starFormationTimer = 0;
   private starsFormed = 0;
   bondingEnabled = false;
@@ -307,7 +308,9 @@ export class Simulator {
   }
 
   private applyHubble(dt: number): void {
-    const factor = 1 + this.hubbleRate * dt;
+    const H = this.currentHubble();
+    if (H <= 0) return;
+    const factor = 1 + H * dt;
     this.scaleFactor *= factor;
     const drag = 1 / factor;
     for (let i = 0; i < this.count; i++) {
@@ -323,6 +326,12 @@ export class Simulator {
       e.y *= factor;
       e.z *= factor;
     }
+  }
+
+  currentHubble(): number {
+    if (this.hubbleRate <= 0) return 0;
+    if (this.hubbleDecay <= 0) return this.hubbleRate;
+    return this.hubbleRate / (1 + this.hubbleDecay * this.simTime);
   }
 
   private checkStarFormation(): void {
