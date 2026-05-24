@@ -104,11 +104,11 @@ export const PRESETS: Preset[] = [
           sim.seedGalaxies({
             galaxyCount: 14,
             starsPerGalaxy: 24,
-            radius: 5.0,
+            radius: 7.0,
             starClusterSize: 4,
             orbitalSpeed: 1.05,
             centralBHMass: 28,
-            centralBHRadius: 0.32,
+            centralBHRadius: 1.5,
           });
         },
       },

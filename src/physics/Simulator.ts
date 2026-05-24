@@ -397,7 +397,7 @@ export class Simulator {
       if (bh && newStars.length > 0) {
         const M = bh.strength;
         const Gpair = this.effectorPairG;
-        const minOrbR = bh.radius * 4;
+        const minOrbR = bh.radius * 2.2;
         for (const s of newStars) {
           let rx = s.x - bh.x;
           let ry = s.y - bh.y;

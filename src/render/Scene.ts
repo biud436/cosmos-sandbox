@@ -696,32 +696,45 @@ export class Scene {
       if (!isSelected && writeVertex >= maxVerts) continue;
 
       let host: Effector | null = null;
-      let bestD2 = Infinity;
+      let hostEnergy = 0;
+      let hostGM = 0;
+      let hostRx = 0, hostRy = 0, hostRz = 0;
+      let hostVx = 0, hostVy = 0, hostVz = 0;
+      let hostRMag = 0;
       for (const bh of bhs) {
         if (bh.strength < star.strength * 1.5) continue;
-        const dx = star.x - bh.x;
-        const dy = star.y - bh.y;
-        const dz = star.z - bh.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < bestD2) {
-          bestD2 = d2;
+        const rxB = star.x - bh.x;
+        const ryB = star.y - bh.y;
+        const rzB = star.z - bh.z;
+        const rMagB = Math.sqrt(rxB * rxB + ryB * ryB + rzB * rzB);
+        if (rMagB < 1e-3) continue;
+        const vxB = star.vx - bh.vx;
+        const vyB = star.vy - bh.vy;
+        const vzB = star.vz - bh.vz;
+        const v2B = vxB * vxB + vyB * vyB + vzB * vzB;
+        const GMB = G * bh.strength;
+        const eB = 0.5 * v2B - GMB / rMagB;
+        if (eB >= 0) continue;
+        if (!host || eB < hostEnergy) {
           host = bh;
+          hostEnergy = eB;
+          hostGM = GMB;
+          hostRx = rxB; hostRy = ryB; hostRz = rzB;
+          hostVx = vxB; hostVy = vyB; hostVz = vzB;
+          hostRMag = rMagB;
         }
       }
       if (!host) continue;
 
-      const GM = G * host.strength;
-      const rx = star.x - host.x;
-      const ry = star.y - host.y;
-      const rz = star.z - host.z;
-      const vx = star.vx - host.vx;
-      const vy = star.vy - host.vy;
-      const vz = star.vz - host.vz;
-      const rMag = Math.sqrt(rx * rx + ry * ry + rz * rz);
-      if (rMag < 1e-3) continue;
-      const v2 = vx * vx + vy * vy + vz * vz;
-      const energy = 0.5 * v2 - GM / rMag;
-      if (energy >= 0) continue;
+      const GM = hostGM;
+      const rx = hostRx;
+      const ry = hostRy;
+      const rz = hostRz;
+      const vx = hostVx;
+      const vy = hostVy;
+      const vz = hostVz;
+      const rMag = hostRMag;
+      const energy = hostEnergy;
       const a = -GM / (2 * energy);
 
       const Lx = ry * vz - rz * vy;
@@ -830,7 +843,7 @@ export class Scene {
       view.group.visible = typeVisible;
       if (!typeVisible) continue;
       view.group.position.set(eff.x, eff.y, eff.z);
-      const scaleBoost = eff.type === 'star' ? 0.85 : eff.type === 'blackhole' ? 5.0 : 1.0;
+      const scaleBoost = eff.type === 'star' ? 0.85 : eff.type === 'blackhole' ? 1.0 : 1.0;
       view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;
