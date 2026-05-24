@@ -6,8 +6,8 @@ import { PRESETS } from './ui/presets';
 import { Tools } from './ui/Tools';
 
 const BOX_HALF = 12;
-const MAX_PARTICLES = 2000;
-const MAX_PER_SPECIES = 800;
+const MAX_PARTICLES = 6000;
+const MAX_PER_SPECIES = 2400;
 const CUTOFF = 2.5;
 
 const viewport = document.getElementById('viewport');
@@ -109,7 +109,7 @@ controls.setDeleteHandler((eff) => {
 
 layout.setEffectorClickHandler((eff) => {
   scene.setSelectedEffector(eff);
-  scene.focusOn([eff.x, eff.y, eff.z]);
+  scene.focusOnEffector(eff);
   controls.showSelectedEffector(eff);
 });
 

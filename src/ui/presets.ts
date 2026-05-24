@@ -12,6 +12,7 @@ export interface Preset {
   thermostatCoolOnly?: boolean;
   initialPattern?: 'uniform' | 'clumpy';
   initialClumpCount?: number;
+  initialClumpSpread?: number;
   hubbleRate?: number;
   hubbleDecay?: number;
   openBoundary?: boolean;
@@ -32,30 +33,31 @@ export interface Preset {
 export const PRESETS: Preset[] = [
   {
     name: '빅뱅 (Big Bang)',
-    description: '작고 차가운 종자에서 시작 → 팽창은 빠르게 감속 → DM 헤일로에 가스가 응집 → 첫 별 탄생.',
+    description: '작고 차가운 종자에서 시작 → 팽창은 빠르게 감속 → DM 헤일로에 가스가 응집 → 여러 은하가 회전하며 탄생.',
     temperatureK: 30,
     gravity: 0,
     windX: 0,
-    selfGravity: 2.0,
+    selfGravity: 1.6,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 540, He: 80, DM: 380 },
+    distribution: { H: 1400, He: 220, DM: 1400 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
     yearsPerUnit: 30_000_000,
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
-    initialClumpCount: 5,
-    initialBoundingRadius: 0.30,
+    initialClumpCount: 8,
+    initialClumpSpread: 0.14,
+    initialBoundingRadius: 0.50,
     initialVelocityScale: 0.15,
     hubbleRate: 0.12,
     hubbleDecay: 0.4,
     openBoundary: true,
     starFormationEnabled: false,
-    starFormationRadius: 2.4,
+    starFormationRadius: 1.4,
     starFormationCount: 4,
-    starFormationCooldown: 0.3,
+    starFormationCooldown: 0.15,
     cosmicEvents: [
       {
         time: 0.5,
@@ -70,7 +72,7 @@ export const PRESETS: Preset[] = [
         time: 2.0,
         name: 'Big Bang Nucleosynthesis',
         description: '빅뱅 핵합성 — 수소가 헬륨으로 변환됩니다.',
-        action: (sim) => { sim.bbnConvert(0.44); },
+        action: (sim) => { sim.bbnConvert(0.30); },
       },
       {
         time: 5.0,
@@ -84,25 +86,40 @@ export const PRESETS: Preset[] = [
       {
         time: 12.0,
         name: 'First Stars · Population III',
-        description: '암흑 시대의 끝. 최초의 별이 탄생합니다.',
+        description: '암흑 시대의 끝. 가스가 응집되어 최초의 별이 일제히 탄생합니다.',
         action: (sim) => {
           sim.starFormationEnabled = true;
-          sim.forceFormStars(5, 3.0, 3);
+          sim.starFormationRadius = 1.4;
+          sim.starFormationCount = 4;
+          sim.forceFormStars(60, 2.0, 4);
         },
       },
       {
         time: 25.0,
         name: 'Galaxy Assembly',
-        description: '별 다발이 회전하며 원시 은하를 이룹니다.',
+        description: '여러 은하가 형성되어 각자의 축으로 회전하기 시작합니다.',
         action: (sim) => {
-          sim.forceFormStars(12, 3.8, 3);
-          sim.spinUpRecentStars(0.8, 0.5);
+          sim.seedGalaxies({
+            galaxyCount: 8,
+            starsPerGalaxy: 28,
+            radius: 3.5,
+            starClusterSize: 4,
+            orbitalSpeed: 0.7,
+          });
+        },
+      },
+      {
+        time: 35.0,
+        name: 'Stellar Baby Boom',
+        description: '남은 가스가 응집해 별이 폭발적으로 더 탄생합니다.',
+        action: (sim) => {
+          sim.forceFormStars(80, 2.0, 4);
         },
       },
       {
         time: 45.0,
         name: 'Central Black Hole',
-        description: '은하 중심에서 거대한 별이 붕괴해 초대질량 BH의 씨앗이 됩니다.',
+        description: '가장 큰 은하 중심에서 거대한 별이 붕괴해 초대질량 BH의 씨앗이 됩니다.',
         action: (sim) => {
           let sumX = 0, sumY = 0, sumZ = 0, totM = 0;
           for (const e of sim.effectors) {

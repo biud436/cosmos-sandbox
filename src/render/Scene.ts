@@ -15,6 +15,9 @@ export class Scene {
   private readonly tmpMat = new THREE.Matrix4();
   private boxMesh: THREE.LineSegments | null = null;
   private gridMesh: THREE.GridHelper | null = null;
+  private universeMesh: THREE.LineSegments | null = null;
+  private universeShell: THREE.Mesh | null = null;
+  private universeVisible = true;
   private bondGeom: THREE.BufferGeometry | null = null;
   private bondPositions: Float32Array | null = null;
   private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
@@ -50,6 +53,7 @@ export class Scene {
     this.controls.target.set(0, 0, 0);
 
     this.buildEnvironment();
+    this.buildUniverseBoundary();
     this.buildStarfield();
     this.buildParticleMeshes();
     this.buildGasRenderer();
@@ -161,6 +165,66 @@ export class Scene {
     this.scene.add(nebula);
   }
 
+  private buildUniverseBoundary(): void {
+    const R = this.boxHalf;
+    const cubeGeo = new THREE.BoxGeometry(R * 2, R * 2, R * 2);
+    const edgesGeo = new THREE.EdgesGeometry(cubeGeo);
+    const edgesMat = new THREE.LineBasicMaterial({
+      color: 0x44ddff,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+    });
+    const wire = new THREE.LineSegments(edgesGeo, edgesMat);
+    wire.frustumCulled = false;
+    this.scene.add(wire);
+    this.universeMesh = wire;
+
+    const shellGeo = new THREE.BoxGeometry(R * 2, R * 2, R * 2);
+    const shellMat = new THREE.ShaderMaterial({
+      side: THREE.FrontSide,
+      transparent: true,
+      depthWrite: false,
+      uniforms: {
+        uColor: { value: new THREE.Color(0x44ddff) },
+      },
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vNormal = normalize(normalMatrix * normal);
+          vViewDir = normalize(-mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
+        uniform vec3 uColor;
+        void main() {
+          float rim = 1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0);
+          float a = pow(rim, 3.0) * 0.45;
+          gl_FragColor = vec4(uColor, a);
+        }
+      `,
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    shell.frustumCulled = false;
+    this.scene.add(shell);
+    this.universeShell = shell;
+  }
+
+  setUniverseBoundaryVisible(visible: boolean): void {
+    this.universeVisible = visible;
+    if (this.universeMesh) this.universeMesh.visible = visible;
+    if (this.universeShell) this.universeShell.visible = visible;
+  }
+
+  isUniverseBoundaryVisible(): boolean {
+    return this.universeVisible;
+  }
+
   private buildEnvironment(): void {
     const ambient = new THREE.AmbientLight(0xffffff, 0.9);
     this.scene.add(ambient);
@@ -185,6 +249,12 @@ export class Scene {
     const edges = new THREE.EdgesGeometry(geo);
     const mat = new THREE.LineBasicMaterial({ color: 0x3a4258, transparent: true, opacity: 0.55 });
     return new THREE.LineSegments(edges, mat);
+  }
+
+  setUniverseScale(scale: number): void {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    if (this.universeMesh) this.universeMesh.scale.setScalar(scale);
+    if (this.universeShell) this.universeShell.scale.setScalar(scale);
   }
 
   setBoxHalf(half: number): void {
@@ -299,6 +369,7 @@ export class Scene {
 
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
+    this.setUniverseScale(sim.scaleFactor);
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
     if (this.renderMode === 'solid') {
@@ -572,24 +643,48 @@ export class Scene {
     this.selectedEffector = eff;
   }
 
+  private focusAnimationId: number | null = null;
+
   focusOn(position: [number, number, number], distance = 6): void {
-    const target = new THREE.Vector3(position[0], position[1], position[2]);
+    this.focusInternal(() => position, distance);
+  }
+
+  focusOnEffector(eff: Effector, distance = 6): void {
+    this.focusInternal(() => [eff.x, eff.y, eff.z] as [number, number, number], distance);
+  }
+
+  private focusInternal(getPos: () => [number, number, number], distance: number): void {
+    if (this.focusAnimationId !== null) {
+      cancelAnimationFrame(this.focusAnimationId);
+      this.focusAnimationId = null;
+    }
+
     const startTarget = this.controls.target.clone();
-    const offset = this.camera.position.clone().sub(this.controls.target);
-    const len = offset.length();
-    if (len > 0.1) offset.multiplyScalar(distance / len);
     const startCam = this.camera.position.clone();
-    const endCam = target.clone().add(offset);
+    const offsetDir = this.camera.position.clone().sub(this.controls.target);
+    const offsetLen = offsetDir.length();
+    if (offsetLen > 0.1) offsetDir.multiplyScalar(distance / offsetLen);
+    else offsetDir.set(distance, distance * 0.6, distance);
+
     const t0 = performance.now();
-    const dur = 650;
+    const dur = 600;
     const animate = () => {
       const t = Math.min(1, (performance.now() - t0) / dur);
       const k = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-      this.controls.target.lerpVectors(startTarget, target, k);
-      this.camera.position.lerpVectors(startCam, endCam, k);
-      if (t < 1) requestAnimationFrame(animate);
+      const p = getPos();
+      const liveTarget = new THREE.Vector3(p[0], p[1], p[2]);
+      const liveCam = liveTarget.clone().add(offsetDir);
+      this.controls.target.lerpVectors(startTarget, liveTarget, k);
+      this.camera.position.lerpVectors(startCam, liveCam, k);
+      if (t < 1) {
+        this.focusAnimationId = requestAnimationFrame(animate);
+      } else {
+        this.controls.target.copy(liveTarget);
+        this.camera.position.copy(liveCam);
+        this.focusAnimationId = null;
+      }
     };
-    requestAnimationFrame(animate);
+    this.focusAnimationId = requestAnimationFrame(animate);
   }
 
   worldFromScreen(clientX: number, clientY: number): [number, number, number] | null {

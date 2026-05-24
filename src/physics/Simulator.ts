@@ -270,6 +270,140 @@ export class Simulator {
     for (let i = 0; i < this.count * 3; i++) this.velocities[i] *= factor;
   }
 
+  seedGalaxies(opts: {
+    galaxyCount: number;
+    starsPerGalaxy: number;
+    radius: number;
+    starClusterSize: number;
+    orbitalSpeed: number;
+  }): { galaxies: number; stars: number } {
+    let galaxiesFormed = 0;
+    let totalStars = 0;
+    const usedCenters: [number, number, number][] = [];
+    const minSeparation2 = (opts.radius * 1.3) * (opts.radius * 1.3);
+    const R2 = opts.radius * opts.radius;
+    const groupSize = Math.max(2, opts.starClusterSize);
+    const maxAttempts = opts.galaxyCount * 4;
+    let attempts = 0;
+    while (galaxiesFormed < opts.galaxyCount && attempts < maxAttempts) {
+      attempts++;
+      const seed = this.findDensestHSeed(opts.radius, usedCenters, minSeparation2);
+      if (seed === -1) break;
+      const cx = this.positions[seed * 3 + 0];
+      const cy = this.positions[seed * 3 + 1];
+      const cz = this.positions[seed * 3 + 2];
+
+      const pool: number[] = [];
+      for (let j = 0; j < this.count; j++) {
+        if (this.species[j] !== 0) continue;
+        const dx = this.positions[j * 3 + 0] - cx;
+        const dy = this.positions[j * 3 + 1] - cy;
+        const dz = this.positions[j * 3 + 2] - cz;
+        if (dx * dx + dy * dy + dz * dz < R2) pool.push(j);
+      }
+      if (pool.length < groupSize) {
+        usedCenters.push([cx, cy, cz]);
+        continue;
+      }
+
+      pool.sort((a, b) => {
+        const ax = this.positions[a * 3 + 0] - cx;
+        const ay = this.positions[a * 3 + 1] - cy;
+        const az = this.positions[a * 3 + 2] - cz;
+        const bx = this.positions[b * 3 + 0] - cx;
+        const by = this.positions[b * 3 + 1] - cy;
+        const bz = this.positions[b * 3 + 2] - cz;
+        return (ax * ax + ay * ay + az * az) - (bx * bx + by * by + bz * bz);
+      });
+
+      const maxStars = Math.min(opts.starsPerGalaxy, Math.floor(pool.length / groupSize));
+      if (maxStars < 1) {
+        usedCenters.push([cx, cy, cz]);
+        continue;
+      }
+
+      const newStars: Effector[] = [];
+      const toRemove: number[] = [];
+      for (let k = 0; k < maxStars; k++) {
+        const slice = pool.slice(k * groupSize, (k + 1) * groupSize);
+        const star = this.spawnStarFromCluster(slice);
+        if (star) {
+          newStars.push(star);
+          for (const idx of slice) toRemove.push(idx);
+        }
+      }
+
+      if (newStars.length >= 2) {
+        let ax = Math.random() * 2 - 1;
+        let ay = Math.random() * 2 - 1;
+        let az = Math.random() * 2 - 1;
+        const len = Math.hypot(ax, ay, az) || 1;
+        ax /= len; ay /= len; az /= len;
+        this.spinAroundAxis(newStars, [ax, ay, az], [cx, cy, cz], opts.orbitalSpeed);
+      }
+
+      toRemove.sort((a, b) => b - a);
+      for (const idx of toRemove) if (idx < this.count) this.removeParticle(idx);
+
+      galaxiesFormed++;
+      totalStars += newStars.length;
+      usedCenters.push([cx, cy, cz]);
+    }
+    return { galaxies: galaxiesFormed, stars: totalStars };
+  }
+
+  private findDensestHSeed(radius: number, excludeCenters: [number, number, number][], minSep2: number): number {
+    const R2 = radius * radius;
+    let bestIdx = -1;
+    let bestCount = -1;
+    for (let i = 0; i < this.count; i++) {
+      if (this.species[i] !== 0) continue;
+      const xi = this.positions[i * 3 + 0];
+      const yi = this.positions[i * 3 + 1];
+      const zi = this.positions[i * 3 + 2];
+      let tooClose = false;
+      for (const c of excludeCenters) {
+        const dx = xi - c[0];
+        const dy = yi - c[1];
+        const dz = zi - c[2];
+        if (dx * dx + dy * dy + dz * dz < minSep2) { tooClose = true; break; }
+      }
+      if (tooClose) continue;
+      let cnt = 0;
+      for (let j = 0; j < this.count; j++) {
+        if (j === i || this.species[j] !== 0) continue;
+        const dx = this.positions[j * 3 + 0] - xi;
+        const dy = this.positions[j * 3 + 1] - yi;
+        const dz = this.positions[j * 3 + 2] - zi;
+        if (dx * dx + dy * dy + dz * dz < R2) cnt++;
+      }
+      if (cnt > bestCount) {
+        bestCount = cnt;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  private spinAroundAxis(stars: Effector[], axis: [number, number, number], center: [number, number, number], orbitalSpeed: number): void {
+    const ax = axis[0], ay = axis[1], az = axis[2];
+    const cx = center[0], cy = center[1], cz = center[2];
+    for (const s of stars) {
+      const rx = s.x - cx;
+      const ry = s.y - cy;
+      const rz = s.z - cz;
+      const tx = ay * rz - az * ry;
+      const ty = az * rx - ax * rz;
+      const tz = ax * ry - ay * rx;
+      const len = Math.hypot(tx, ty, tz);
+      if (len < 1e-3) continue;
+      const k = orbitalSpeed / len;
+      s.vx += tx * k;
+      s.vy += ty * k;
+      s.vz += tz * k;
+    }
+  }
+
   spinUpRecentStars(orbitalSpeed: number, withinSimTime: number): number {
     const cutoff = this.simTime - withinSimTime;
     const recent: Effector[] = [];
@@ -353,10 +487,12 @@ export class Simulator {
     }
 
     if (!this.openBoundary) this.applyBoundary();
+    else this.applyPeriodicBoundary();
     this.applyThermostat(dt);
     this.integrateEffectors(dt);
 
     if (this.hubbleRate > 0) this.applyHubble(dt);
+    if (this.openBoundary) this.applyPeriodicBoundary();
 
     if (this.starFormationEnabled) {
       this.starFormationTimer += dt;
@@ -409,26 +545,49 @@ export class Simulator {
     const R = this.starFormationRadius;
     const R2 = R * R;
     const threshold = this.starFormationCount;
+    const targetSize = Math.max(threshold, Math.min(threshold + 2, 8));
     const claimed = new Uint8Array(this.count);
     const removed: number[] = [];
 
+    const candidateSeeds: { idx: number; sp: number; score: number }[] = [];
     for (let i = 0; i < this.count; i++) {
-      if (claimed[i]) continue;
       const si = this.species[i];
       if (si !== 0 && si !== 4) continue;
       const xi = this.positions[i * 3 + 0];
       const yi = this.positions[i * 3 + 1];
       const zi = this.positions[i * 3 + 2];
-      const cluster: number[] = [i];
+      let cnt = 0;
       for (let j = 0; j < this.count; j++) {
-        if (j === i || claimed[j]) continue;
-        if (this.species[j] !== si) continue;
+        if (j === i || this.species[j] !== si) continue;
         const dx = this.positions[j * 3 + 0] - xi;
         const dy = this.positions[j * 3 + 1] - yi;
         const dz = this.positions[j * 3 + 2] - zi;
-        if (dx * dx + dy * dy + dz * dz < R2) cluster.push(j);
+        if (dx * dx + dy * dy + dz * dz < R2) cnt++;
       }
-      if (cluster.length < threshold) continue;
+      if (cnt + 1 >= threshold) candidateSeeds.push({ idx: i, sp: si, score: cnt });
+    }
+    candidateSeeds.sort((a, b) => b.score - a.score);
+
+    for (const seed of candidateSeeds) {
+      if (claimed[seed.idx]) continue;
+      const xi = this.positions[seed.idx * 3 + 0];
+      const yi = this.positions[seed.idx * 3 + 1];
+      const zi = this.positions[seed.idx * 3 + 2];
+      const nearby: { idx: number; d2: number }[] = [];
+      for (let j = 0; j < this.count; j++) {
+        if (j === seed.idx || claimed[j]) continue;
+        if (this.species[j] !== seed.sp) continue;
+        const dx = this.positions[j * 3 + 0] - xi;
+        const dy = this.positions[j * 3 + 1] - yi;
+        const dz = this.positions[j * 3 + 2] - zi;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < R2) nearby.push({ idx: j, d2 });
+      }
+      if (nearby.length + 1 < threshold) continue;
+      nearby.sort((a, b) => a.d2 - b.d2);
+      const take = Math.min(nearby.length, targetSize - 1);
+      const cluster = [seed.idx];
+      for (let k = 0; k < take; k++) cluster.push(nearby[k].idx);
       for (const idx of cluster) claimed[idx] = 1;
       this.spawnStarFromCluster(cluster);
       for (const idx of cluster) removed.push(idx);
@@ -485,23 +644,59 @@ export class Simulator {
 
   private scanAndFormStars(maxStars: number, radius: number, minClusterSize: number): number {
     const r2 = radius * radius;
-    const candidates: { members: number[] }[] = [];
-    for (let i = 0; i < this.count; i++) {
-      if (this.species[i] !== 0) continue;
-      const members: number[] = [i];
+    const targetSize = Math.max(minClusterSize, Math.min(minClusterSize + 2, 8));
+    const hIndices: number[] = [];
+    for (let i = 0; i < this.count; i++) if (this.species[i] === 0) hIndices.push(i);
+    if (hIndices.length < minClusterSize) return 0;
+
+    const score = new Int32Array(this.count);
+    for (const i of hIndices) {
       const xi = this.positions[i * 3 + 0];
       const yi = this.positions[i * 3 + 1];
       const zi = this.positions[i * 3 + 2];
-      for (let j = 0; j < this.count; j++) {
-        if (j === i || this.species[j] !== 0) continue;
+      let s = 0;
+      for (const j of hIndices) {
+        if (j === i) continue;
         const dx = this.positions[j * 3 + 0] - xi;
         const dy = this.positions[j * 3 + 1] - yi;
         const dz = this.positions[j * 3 + 2] - zi;
-        if (dx * dx + dy * dy + dz * dz < r2) members.push(j);
+        if (dx * dx + dy * dy + dz * dz < r2) s++;
       }
-      if (members.length >= minClusterSize) candidates.push({ members });
+      score[i] = s;
     }
-    return this.consumeClustersIntoStars(candidates, maxStars);
+    hIndices.sort((a, b) => score[b] - score[a]);
+
+    const claimed = new Uint8Array(this.count);
+    const removed: number[] = [];
+    let formed = 0;
+    for (const seed of hIndices) {
+      if (formed >= maxStars) break;
+      if (claimed[seed]) continue;
+      const xi = this.positions[seed * 3 + 0];
+      const yi = this.positions[seed * 3 + 1];
+      const zi = this.positions[seed * 3 + 2];
+      const nearby: { idx: number; d2: number }[] = [];
+      for (const j of hIndices) {
+        if (j === seed || claimed[j]) continue;
+        const dx = this.positions[j * 3 + 0] - xi;
+        const dy = this.positions[j * 3 + 1] - yi;
+        const dz = this.positions[j * 3 + 2] - zi;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < r2) nearby.push({ idx: j, d2 });
+      }
+      if (nearby.length + 1 < minClusterSize) continue;
+      nearby.sort((a, b) => a.d2 - b.d2);
+      const take = Math.min(nearby.length, targetSize - 1);
+      const members = [seed];
+      for (let k = 0; k < take; k++) members.push(nearby[k].idx);
+      for (const idx of members) claimed[idx] = 1;
+      this.spawnStarFromCluster(members);
+      for (const idx of members) removed.push(idx);
+      formed++;
+    }
+    removed.sort((a, b) => b - a);
+    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
+    return formed;
   }
 
   private fallbackFormStars(maxStars: number): number {
@@ -543,7 +738,7 @@ export class Simulator {
     return formed;
   }
 
-  private spawnStarFromCluster(indices: number[]): void {
+  private spawnStarFromCluster(indices: number[]): Effector | null {
     let cx = 0;
     let cy = 0;
     let cz = 0;
@@ -561,7 +756,7 @@ export class Simulator {
       vz += this.velocities[i * 3 + 2] * m;
       total += m;
     }
-    if (total <= 0) return;
+    if (total <= 0) return null;
     cx /= total;
     cy /= total;
     cz /= total;
@@ -577,6 +772,7 @@ export class Simulator {
     eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
     this.starsFormed++;
     this.onStarFormation?.([cx, cy, cz], indices.length);
+    return eff;
   }
 
   private integrateEffectors(dt: number): void {
@@ -1243,6 +1439,26 @@ export class Simulator {
           if (this.velocities[idx] < 0) this.velocities[idx] = -this.velocities[idx];
         }
       }
+    }
+  }
+
+  private applyPeriodicBoundary(): void {
+    const half = this.boxHalf * this.scaleFactor;
+    if (!Number.isFinite(half) || half <= 0) return;
+    const period = 2 * half;
+    for (let i = 0; i < this.count; i++) {
+      for (let k = 0; k < 3; k++) {
+        const idx = i * 3 + k;
+        const p = this.positions[idx];
+        if (p > half || p < -half) {
+          this.positions[idx] = p - period * Math.floor((p + half) / period);
+        }
+      }
+    }
+    for (const e of this.effectors) {
+      if (e.x > half || e.x < -half) e.x = e.x - period * Math.floor((e.x + half) / period);
+      if (e.y > half || e.y < -half) e.y = e.y - period * Math.floor((e.y + half) / period);
+      if (e.z > half || e.z < -half) e.z = e.z - period * Math.floor((e.z + half) / period);
     }
   }
 

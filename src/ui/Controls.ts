@@ -72,6 +72,11 @@ export class Controls {
     folder.add(this.sim, 'starFormationCount', 4, 80, 1).name('SF threshold').listen();
     folder.add(this.sim, 'starFormationCooldown', 0.05, 2.0, 0.05).name('SF cooldown').listen();
     folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
+    const boundaryProxy = { visible: this.scene.isUniverseBoundaryVisible() };
+    folder
+      .add(boundaryProxy, 'visible')
+      .name('우주 경계 표시')
+      .onChange((v: boolean) => this.scene.setUniverseBoundaryVisible(v));
   }
 
   private buildBondingFolder(): void {
@@ -127,7 +132,7 @@ export class Controls {
     for (const sp of SPECIES) {
       if (!(sp.name in this.distribution)) this.distribution[sp.name] = 0;
       const ctrl = folder
-        .add(this.distribution, sp.name, 0, 800, 1)
+        .add(this.distribution, sp.name, 0, 2400, 1)
         .name(sp.name)
         .onChange(() => {
           if (this.suppressApply) return;
@@ -181,6 +186,7 @@ export class Controls {
     this.sim.thermostatCoolOnly = preset.thermostatCoolOnly ?? false;
     this.sim.initialPattern = preset.initialPattern ?? 'uniform';
     if (preset.initialClumpCount !== undefined) this.sim.initialClumpCount = preset.initialClumpCount;
+    if (preset.initialClumpSpread !== undefined) this.sim.initialClumpSpread = preset.initialClumpSpread;
     this.sim.hubbleRate = preset.hubbleRate ?? 0;
     this.sim.hubbleDecay = preset.hubbleDecay ?? 0;
     this.sim.openBoundary = preset.openBoundary ?? false;
