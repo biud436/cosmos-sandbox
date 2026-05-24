@@ -66,6 +66,10 @@ export class Simulator {
   targetTemperatureK = 300;
   gravity = 0;
   thermostatTau = 0.5;
+  thermostatCoolOnly = false;
+  initialPattern: 'uniform' | 'clumpy' = 'uniform';
+  initialClumpCount = 6;
+  initialClumpSpread = 0.18;
   fusionEnabled = false;
   fusionThresholdReduced = 30;
   fusionEnergyRelease = 8;
@@ -161,23 +165,50 @@ export class Simulator {
     const half = this.boxHalf * 0.9;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
+    let clumps: [number, number, number][] = [];
+    if (this.initialPattern === 'clumpy') {
+      const n = Math.max(2, this.initialClumpCount);
+      const inner = this.boxHalf * 0.65;
+      for (let k = 0; k < n; k++) {
+        clumps.push([
+          (Math.random() * 2 - 1) * inner,
+          (Math.random() * 2 - 1) * inner,
+          (Math.random() * 2 - 1) * inner,
+        ]);
+      }
+    }
+
     for (const [name, n] of Object.entries(distribution)) {
       const species = SPECIES.find((s) => s.name === name);
       if (!species) continue;
       for (let k = 0; k < n; k++) {
         if (this.count >= this.maxParticles) return;
-        this.addParticle(species, half, targetT);
+        this.addParticle(species, half, targetT, clumps);
       }
     }
     this.removeCenterOfMassMotion();
   }
 
-  private addParticle(species: Species, half: number, targetTReduced: number): void {
+  private addParticle(species: Species, half: number, targetTReduced: number, clumps: [number, number, number][]): void {
     const i = this.count++;
     this.species[i] = species.id;
-    this.positions[i * 3 + 0] = (Math.random() * 2 - 1) * half;
-    this.positions[i * 3 + 1] = (Math.random() * 2 - 1) * half;
-    this.positions[i * 3 + 2] = (Math.random() * 2 - 1) * half;
+    if (clumps.length > 0) {
+      const c = clumps[(Math.random() * clumps.length) | 0];
+      const spread = this.boxHalf * this.initialClumpSpread;
+      let x = c[0] + gaussian() * spread;
+      let y = c[1] + gaussian() * spread;
+      let z = c[2] + gaussian() * spread;
+      x = Math.max(-half, Math.min(half, x));
+      y = Math.max(-half, Math.min(half, y));
+      z = Math.max(-half, Math.min(half, z));
+      this.positions[i * 3 + 0] = x;
+      this.positions[i * 3 + 1] = y;
+      this.positions[i * 3 + 2] = z;
+    } else {
+      this.positions[i * 3 + 0] = (Math.random() * 2 - 1) * half;
+      this.positions[i * 3 + 1] = (Math.random() * 2 - 1) * half;
+      this.positions[i * 3 + 2] = (Math.random() * 2 - 1) * half;
+    }
 
     const sigma = Math.sqrt((K_BOLTZMANN_REDUCED * targetTReduced) / Math.max(species.mass, 1e-6));
     this.velocities[i * 3 + 0] = gaussian() * sigma;
@@ -391,6 +422,7 @@ export class Simulator {
       this.grid.forEachNeighbor(i, this.positions, (j) => {
         const sj = this.species[j];
         const p = this.pairOf(si, sj);
+        if (p.epsilon === 0) return;
         const dx = this.positions[j * 3 + 0] - xi;
         const dy = this.positions[j * 3 + 1] - yi;
         const dz = this.positions[j * 3 + 2] - zi;
@@ -860,6 +892,7 @@ export class Simulator {
     const tCurrent = (2 * ke) / (dof * K_BOLTZMANN_REDUCED);
     if (tCurrent < 1e-8) return;
     const tTarget = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
+    if (this.thermostatCoolOnly && tCurrent <= tTarget) return;
     const lambda = Math.sqrt(1 + (dt / this.thermostatTau) * (tTarget / tCurrent - 1));
     if (!Number.isFinite(lambda) || lambda <= 0) return;
     for (let i = 0; i < this.count * 3; i++) this.velocities[i] *= lambda;

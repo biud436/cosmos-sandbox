@@ -165,6 +165,9 @@ export class Controls {
     this.sim.selfGravity = preset.selfGravity;
     this.sim.bondingEnabled = preset.bondingEnabled;
     this.sim.fusionEnabled = preset.fusionEnabled;
+    this.sim.thermostatCoolOnly = preset.thermostatCoolOnly ?? false;
+    this.sim.initialPattern = preset.initialPattern ?? 'uniform';
+    if (preset.initialClumpCount !== undefined) this.sim.initialClumpCount = preset.initialClumpCount;
     this.scene.setRenderMode(preset.renderMode);
     this.scene.setEnvironmentVisible(preset.showEnvironment);
 

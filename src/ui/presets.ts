@@ -7,6 +7,9 @@ export interface Preset {
   selfGravity: number;
   bondingEnabled: boolean;
   fusionEnabled: boolean;
+  thermostatCoolOnly?: boolean;
+  initialPattern?: 'uniform' | 'clumpy';
+  initialClumpCount?: number;
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
   showEnvironment: boolean;
@@ -17,18 +20,21 @@ export interface Preset {
 export const PRESETS: Preset[] = [
   {
     name: '우주 가스 구름',
-    description: '차가운 수소·헬륨 + 약한 자기중력 + 화학 결합. H 원자들이 만나면 H₂ 분자 형성.',
-    temperatureK: 35,
+    description: '암흑물질 헤일로 + 클럼피 초기 조건. DM 중력 우물에 H/He가 끌려가 응집·구조 형성.',
+    temperatureK: 12,
     gravity: 0,
     windX: 0,
-    selfGravity: 0.25,
+    selfGravity: 1.0,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 520, He: 90 },
+    distribution: { H: 360, He: 60, DM: 420 },
     renderMode: 'gas',
     showEnvironment: false,
-    initialTimeScale: 2,
-    yearsPerUnit: 1_000_000,
+    initialTimeScale: 4,
+    yearsPerUnit: 5_000_000,
+    thermostatCoolOnly: true,
+    initialPattern: 'clumpy',
+    initialClumpCount: 6,
   },
   {
     name: '공기 흐름',
