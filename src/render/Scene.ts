@@ -830,7 +830,7 @@ export class Scene {
       view.group.visible = typeVisible;
       if (!typeVisible) continue;
       view.group.position.set(eff.x, eff.y, eff.z);
-      const scaleBoost = eff.type === 'star' ? 1.8 : eff.type === 'blackhole' ? 3.2 : 1.0;
+      const scaleBoost = eff.type === 'star' ? 0.85 : eff.type === 'blackhole' ? 5.0 : 1.0;
       view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;
@@ -884,14 +884,12 @@ export class Scene {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
             if (r > 1.0) discard;
-            float a = atan(c.y, c.x);
-            float rays = abs(sin(a * 6.0 + uTime * 0.4)) * 0.55 + 0.45;
-            float core = exp(-r * 3.5);
-            float halo = exp(-r * 1.2) * 0.55;
-            float spike = pow(max(1.0 - abs(c.x), 0.0), 28.0) + pow(max(1.0 - abs(c.y), 0.0), 28.0);
-            float glow = core + halo * rays + spike * 0.45;
-            vec3 col = mix(vec3(1.0, 0.55, 0.15), vec3(1.0, 0.97, 0.78), core);
-            gl_FragColor = vec4(col * (1.0 + glow * 1.5), clamp(glow, 0.0, 1.0));
+            float core = exp(-r * 6.5);
+            float halo = exp(-r * 1.6) * 0.18;
+            float twinkle = 0.92 + 0.08 * sin(uTime * 2.3);
+            float glow = (core + halo) * twinkle;
+            vec3 col = mix(vec3(1.0, 0.72, 0.4), vec3(1.0, 0.98, 0.88), core);
+            gl_FragColor = vec4(col * (0.5 + glow * 0.9), clamp(glow, 0.0, 1.0));
           }
         `;
         break;
