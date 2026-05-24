@@ -47,7 +47,6 @@
 
       #toolbar { grid-area: toolbar; display: flex; flex-direction: row; align-items: center; gap: 8px; padding: 0 12px; }
       #toolbar .title { font-weight: 700; color: var(--text); letter-spacing: 0.5px; }
-      #toolbar .title .accent { color: var(--accent); }
       #toolbar .spacer { flex: 1; }
       #toolbar .pill {
         background: var(--panel-hi); border: 1px solid var(--border);
@@ -171,7 +170,7 @@
   <body>
     <div id="shell">
       <div id="toolbar" class="panel">
-        <span class="title">COSMOS<span class="accent"> · sandbox</span></span>
+        <span class="title">COSMOS SANDBOX</span>
         <button id="btn-pause" title="시간 정지/재개 (Space)">⏸ Pause</button>
         <button id="btn-step" title="일시정지 상태에서 1틱 전진" disabled>⏭ Step</button>
         <button id="btn-reset" title="현재 분포로 재시작">↺ Reset</button>
