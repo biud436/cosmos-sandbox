@@ -94,7 +94,7 @@ export class Simulator {
   windX = 0;
   selfGravity = 0;
   selfGravitySoftening = 0.6;
-  bhTheta = 0.6;
+  bhTheta = 0.9;
   hubbleRate = 0;
   hubbleDecay = 0;
   scaleFactor = 1.0;

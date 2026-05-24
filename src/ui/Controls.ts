@@ -185,7 +185,7 @@ export class Controls {
     for (const sp of SPECIES) {
       if (!(sp.name in this.distribution)) this.distribution[sp.name] = 0;
       const ctrl = folder
-        .add(this.distribution, sp.name, 0, 5500, 1)
+        .add(this.distribution, sp.name, 0, 3500, 1)
         .name(sp.name)
         .onChange(() => {
           if (this.suppressApply) return;
@@ -240,6 +240,7 @@ export class Controls {
     this.sim.initialPattern = preset.initialPattern ?? 'uniform';
     if (preset.initialClumpCount !== undefined) this.sim.initialClumpCount = preset.initialClumpCount;
     if (preset.initialClumpSpread !== undefined) this.sim.initialClumpSpread = preset.initialClumpSpread;
+    if (preset.initialClumpRotation !== undefined) this.sim.initialClumpRotation = preset.initialClumpRotation;
     this.sim.hubbleRate = preset.hubbleRate ?? 0;
     this.sim.hubbleDecay = preset.hubbleDecay ?? 0;
     this.sim.openBoundary = preset.openBoundary ?? false;

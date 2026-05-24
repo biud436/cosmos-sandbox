@@ -13,6 +13,7 @@ export interface Preset {
   initialPattern?: 'uniform' | 'clumpy';
   initialClumpCount?: number;
   initialClumpSpread?: number;
+  initialClumpRotation?: number;
   hubbleRate?: number;
   hubbleDecay?: number;
   openBoundary?: boolean;
@@ -42,7 +43,7 @@ export const PRESETS: Preset[] = [
     selfGravity: 0.9,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 4500, He: 700, DM: 4500 },
+    distribution: { H: 2500, He: 400, DM: 1800 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
@@ -50,9 +51,10 @@ export const PRESETS: Preset[] = [
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
     initialClumpCount: 14,
-    initialClumpSpread: 0.015,
+    initialClumpSpread: 0.018,
     initialBoundingRadius: 0.85,
-    initialVelocityScale: 0.15,
+    initialVelocityScale: 0.45,
+    initialClumpRotation: 1.1,
     hubbleRate: 0.22,
     hubbleDecay: 0.12,
     openBoundary: true,
