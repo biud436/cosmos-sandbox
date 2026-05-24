@@ -79,6 +79,10 @@ export class Controls {
   private buildEffectorPhysicsFolder(): void {
     const folder = this.gui.addFolder('효과기 물리');
     folder.add(this.sim, 'effectorPairG', 0, 1.5, 0.01).name('효과기 상호 G').listen();
+    folder.add(this.sim, 'starStarGMul', 0, 1.0, 0.01).name('별-별 G 배율').listen();
+    folder.add(this.sim, 'starConsumeRadiusMul', 0.1, 1.0, 0.05).name('별 소비 반경 배율').listen();
+    folder.add(this.sim, 'bhInspiralRate', 0, 5.0, 0.05).name('BH 중력파 inspiral').listen();
+    folder.add(this.sim, 'bhInspiralRange', 1, 30, 0.5).name('BH inspiral 범위').listen();
     folder.add(this.sim, 'blackHoleG', 0, 4.0, 0.05).name('블랙홀 → 입자 G').listen();
     folder.add(this.sim, 'starG', 0, 4.0, 0.05).name('별 → 입자 G').listen();
     folder.add(this.sim, 'repulsorG', 0, 10, 0.1).name('반발자 G').listen();

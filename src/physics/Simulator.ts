@@ -117,6 +117,10 @@ export class Simulator {
   repulsorG = 4;
   freezerDamp = 0.92;
   effectorPairG = 0.15;
+  starStarGMul = 0.15;
+  starConsumeRadiusMul = 0.55;
+  bhInspiralRate = 0.6;
+  bhInspiralRange = 8;
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -893,6 +897,7 @@ export class Simulator {
     const ay = new Float64Array(list.length);
     const az = new Float64Array(list.length);
 
+    const starStarMul = this.starStarGMul;
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
       if (!this.isMassive(a)) continue;
@@ -904,7 +909,9 @@ export class Simulator {
         const dz = b.z - a.z;
         const r2 = dx * dx + dy * dy + dz * dz + eps2;
         const invR = 1 / Math.sqrt(r2);
-        const base = G * invR * invR * invR;
+        let mul = 1;
+        if (a.type === 'star' && b.type === 'star') mul = starStarMul;
+        const base = G * invR * invR * invR * mul;
         const fa = base * b.strength;
         const fb = base * a.strength;
         ax[i] += fa * dx;
@@ -927,7 +934,38 @@ export class Simulator {
       e.z += e.vz * dt;
     }
 
+    if (this.bhInspiralRate > 0) this.applyBHInspiral(dt);
     this.handleEffectorCollisions();
+  }
+
+  private applyBHInspiral(dt: number): void {
+    const list = this.effectors;
+    const range2 = this.bhInspiralRange * this.bhInspiralRange;
+    const rate = this.bhInspiralRate;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (a.type !== 'blackhole') continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (b.type !== 'blackhole') continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dz = b.z - a.z;
+        const r2 = dx * dx + dy * dy + dz * dz;
+        if (r2 > range2 || r2 < 1e-3) continue;
+        // GW-like drag: damp relative motion, stronger when close
+        const dvx = b.vx - a.vx;
+        const dvy = b.vy - a.vy;
+        const dvz = b.vz - a.vz;
+        const drag = rate * dt / (r2 + 1);
+        a.vx += dvx * drag;
+        a.vy += dvy * drag;
+        a.vz += dvz * drag;
+        b.vx -= dvx * drag;
+        b.vy -= dvy * drag;
+        b.vz -= dvz * drag;
+      }
+    }
   }
 
   private handleEffectorCollisions(): void {
@@ -950,12 +988,12 @@ export class Simulator {
             removed.add(b);
           }
         } else if (a.type === 'blackhole' && b.type === 'star') {
-          if (r < a.radius) {
+          if (r < a.radius * this.starConsumeRadiusMul) {
             this.consumeStar(a, b);
             removed.add(b);
           }
         } else if (a.type === 'star' && b.type === 'blackhole') {
-          if (r < b.radius) {
+          if (r < b.radius * this.starConsumeRadiusMul) {
             this.consumeStar(b, a);
             removed.add(a);
             break;

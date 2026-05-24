@@ -120,6 +120,22 @@ export const PRESETS: Preset[] = [
           sim.forceFormStars(120, 2.0, 4);
         },
       },
+      {
+        time: 35.0,
+        name: 'Second Wave',
+        description: '남은 가스에서 다시 별이 형성됩니다.',
+        action: (sim) => {
+          sim.forceFormStars(80, 2.5, 4);
+        },
+      },
+      {
+        time: 60.0,
+        name: 'Late Star Formation',
+        description: '잔존 가스로 마지막 별들이 태어납니다.',
+        action: (sim) => {
+          sim.forceFormStars(60, 3.0, 3);
+        },
+      },
     ],
   },
   {
