@@ -74,6 +74,7 @@ export class Controls {
     folder.add(this.sim, 'initialClumpSpread', 0.005, 0.30, 0.005).name('클럼프 퍼짐').listen();
     folder.add(this.sim, 'initialBoundingRadius', 0.05, 1.0, 0.05).name('초기 분포 반경').listen();
     folder.add(this.sim, 'initialVelocityScale', 0, 3, 0.05).name('초기 속도 스케일').listen();
+    folder.add(this.sim, 'initialClumpRotation', 0, 3, 0.05).name('클럼프 자전 ω').listen();
   }
 
   private buildEffectorPhysicsFolder(): void {

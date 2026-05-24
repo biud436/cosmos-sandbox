@@ -83,6 +83,7 @@ export class Simulator {
   thermostatTau = 0.5;
   thermostatCoolOnly = false;
   initialPattern: 'uniform' | 'clumpy' = 'uniform';
+  initialClumpRotation = 0.6;
   initialClumpCount = 6;
   initialClumpSpread = 0.18;
   initialBoundingRadius = 0.9;
@@ -228,16 +229,28 @@ export class Simulator {
     const half = this.boxHalf * this.initialBoundingRadius;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
-    let clumps: [number, number, number][] = [];
+    interface Clump {
+      cx: number; cy: number; cz: number;
+      ax: number; ay: number; az: number; // unit rotation axis
+      omega: number; // angular speed
+    }
+    let clumps: Clump[] = [];
     if (this.initialPattern === 'clumpy') {
       const n = Math.max(2, this.initialClumpCount);
       const inner = half * 0.7;
       for (let k = 0; k < n; k++) {
-        clumps.push([
-          (Math.random() * 2 - 1) * inner,
-          (Math.random() * 2 - 1) * inner,
-          (Math.random() * 2 - 1) * inner,
-        ]);
+        let ax = Math.random() * 2 - 1;
+        let ay = Math.random() * 2 - 1;
+        let az = Math.random() * 2 - 1;
+        const al = Math.hypot(ax, ay, az) || 1;
+        ax /= al; ay /= al; az /= al;
+        clumps.push({
+          cx: (Math.random() * 2 - 1) * inner,
+          cy: (Math.random() * 2 - 1) * inner,
+          cz: (Math.random() * 2 - 1) * inner,
+          ax, ay, az,
+          omega: this.initialClumpRotation * (0.7 + Math.random() * 0.6),
+        });
       }
     }
 
@@ -252,21 +265,29 @@ export class Simulator {
     this.removeCenterOfMassMotion();
   }
 
-  private addParticle(species: Species, half: number, targetTReduced: number, clumps: [number, number, number][]): void {
+  private addParticle(species: Species, half: number, targetTReduced: number, clumps: { cx: number; cy: number; cz: number; ax: number; ay: number; az: number; omega: number }[]): void {
     const i = this.count++;
     this.species[i] = species.id;
+    let offX = 0, offY = 0, offZ = 0;
+    let clump: { cx: number; cy: number; cz: number; ax: number; ay: number; az: number; omega: number } | null = null;
     if (clumps.length > 0) {
-      const c = clumps[(Math.random() * clumps.length) | 0];
+      clump = clumps[(Math.random() * clumps.length) | 0];
       const spread = half * this.initialClumpSpread;
-      let x = c[0] + gaussian() * spread;
-      let y = c[1] + gaussian() * spread;
-      let z = c[2] + gaussian() * spread;
+      offX = gaussian() * spread;
+      offY = gaussian() * spread;
+      offZ = gaussian() * spread;
+      let x = clump.cx + offX;
+      let y = clump.cy + offY;
+      let z = clump.cz + offZ;
       x = Math.max(-half, Math.min(half, x));
       y = Math.max(-half, Math.min(half, y));
       z = Math.max(-half, Math.min(half, z));
       this.positions[i * 3 + 0] = x;
       this.positions[i * 3 + 1] = y;
       this.positions[i * 3 + 2] = z;
+      offX = x - clump.cx;
+      offY = y - clump.cy;
+      offZ = z - clump.cz;
     } else {
       this.positions[i * 3 + 0] = (Math.random() * 2 - 1) * half;
       this.positions[i * 3 + 1] = (Math.random() * 2 - 1) * half;
@@ -274,9 +295,21 @@ export class Simulator {
     }
 
     const sigma = Math.sqrt((K_BOLTZMANN_REDUCED * targetTReduced) / Math.max(species.mass, 1e-6)) * this.initialVelocityScale;
-    this.velocities[i * 3 + 0] = gaussian() * sigma;
-    this.velocities[i * 3 + 1] = gaussian() * sigma;
-    this.velocities[i * 3 + 2] = gaussian() * sigma;
+    let vx = gaussian() * sigma;
+    let vy = gaussian() * sigma;
+    let vz = gaussian() * sigma;
+    if (clump && clump.omega !== 0) {
+      // Tangential rotation about clump axis: v_tangent = omega * (axis × offset)
+      const tx = clump.ay * offZ - clump.az * offY;
+      const ty = clump.az * offX - clump.ax * offZ;
+      const tz = clump.ax * offY - clump.ay * offX;
+      vx += tx * clump.omega;
+      vy += ty * clump.omega;
+      vz += tz * clump.omega;
+    }
+    this.velocities[i * 3 + 0] = vx;
+    this.velocities[i * 3 + 1] = vy;
+    this.velocities[i * 3 + 2] = vz;
   }
 
   coolAllParticles(factor: number): void {
@@ -395,85 +428,10 @@ export class Simulator {
         }
       }
 
-      let axisX = Math.random() * 2 - 1;
-      let axisY = Math.random() * 2 - 1;
-      let axisZ = Math.random() * 2 - 1;
-      const axLen = Math.hypot(axisX, axisY, axisZ) || 1;
-      axisX /= axLen; axisY /= axLen; axisZ /= axLen;
-
-      if (bh && newStars.length > 0) {
-        const M = bh.strength;
-        const Gpair = this.effectorPairG;
-        const minOrbR = bh.radius * 2.2;
-        for (const s of newStars) {
-          let rx = s.x - bh.x;
-          let ry = s.y - bh.y;
-          let rz = s.z - bh.z;
-          let r = Math.hypot(rx, ry, rz);
-          if (r < minOrbR) {
-            const scale = minOrbR / Math.max(r, 1e-3);
-            s.x = bh.x + rx * scale;
-            s.y = bh.y + ry * scale;
-            s.z = bh.z + rz * scale;
-            rx = s.x - bh.x; ry = s.y - bh.y; rz = s.z - bh.z;
-            r = minOrbR;
-          }
-          const tx = axisY * rz - axisZ * ry;
-          const ty = axisZ * rx - axisX * rz;
-          const tz = axisX * ry - axisY * rx;
-          const tlen = Math.hypot(tx, ty, tz);
-          if (tlen < 1e-3) continue;
-          const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
-          const k = vCirc / tlen;
-          s.vx = cvx + tx * k;
-          s.vy = cvy + ty * k;
-          s.vz = cvz + tz * k;
-        }
-      } else if (newStars.length >= 2) {
-        // No central BH: stars orbit cluster COM with combined gravity from
-        // DM halo + other stars. Inside a roughly uniform mass distribution
-        // the correct rotation is rigid-body: v(r) = r·Ω, not Keplerian.
-        let totalStellarMass = 0;
-        for (const s of newStars) totalStellarMass += s.strength;
-
-        const dmId = this.dmSpeciesId;
-        let dmMass = 0;
-        if (dmId >= 0) {
-          const r2gal = opts.radius * opts.radius;
-          const dmMassPer = SPECIES[dmId].mass;
-          for (let j = 0; j < this.count; j++) {
-            if (this.species[j] !== dmId) continue;
-            const ddx = this.positions[j * 3 + 0] - cx;
-            const ddy = this.positions[j * 3 + 1] - cy;
-            const ddz = this.positions[j * 3 + 2] - cz;
-            if (ddx * ddx + ddy * ddy + ddz * ddz < r2gal) dmMass += dmMassPer;
-          }
-        }
-
-        const Gpair = this.effectorPairG * this.starStarGMul;
-        const Gsg = this.selfGravity;
-        const combinedGM = Gsg * dmMass + Gpair * totalStellarMass;
-        const R = opts.radius;
-        const omega = Math.sqrt(Math.max(0, combinedGM / (R * R * R)));
-
-        for (const s of newStars) {
-          const rx = s.x - cx;
-          const ry = s.y - cy;
-          const rz = s.z - cz;
-          const r = Math.hypot(rx, ry, rz);
-          if (r < 0.3) continue;
-          const tx = axisY * rz - axisZ * ry;
-          const ty = axisZ * rx - axisX * rz;
-          const tz = axisX * ry - axisY * rx;
-          const tlen = Math.hypot(tx, ty, tz);
-          if (tlen < 1e-3) continue;
-          const v = r * omega * opts.orbitalSpeed;
-          const k = v / tlen;
-          s.vx = cvx + tx * k;
-          s.vy = cvy + ty * k;
-          s.vz = cvz + tz * k;
-        }
-      }
+      // No manual velocity setup — stars inherit the bulk velocity of the gas
+      // they formed from (via spawnStarFromCluster). With rotating initial
+      // clumps, that gas already carries angular momentum, so the stars
+      // naturally orbit the DM halo gravity well via the integrator.
 
       toRemove.sort((a, b) => b - a);
       for (const idx of toRemove) if (idx < this.count) this.removeParticle(idx);
@@ -902,10 +860,12 @@ export class Simulator {
     vz /= total;
 
     const eff = this.addEffector('star', cx, cy, cz);
-    const inheritDamp = 0.4;
-    eff.vx = vx * inheritDamp;
-    eff.vy = vy * inheritDamp;
-    eff.vz = vz * inheritDamp;
+    // Inherit the full bulk velocity of the gas cluster (preserves angular
+    // momentum of the collapsing gas → star naturally orbits whatever the
+    // gas was orbiting, no manual setup needed).
+    eff.vx = vx;
+    eff.vy = vy;
+    eff.vz = vz;
     eff.strength = Math.min(180, total * 25);
     eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
     this.starsFormed++;
