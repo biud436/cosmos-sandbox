@@ -119,6 +119,9 @@ export class Simulator {
   onFusion: ((event: FusionEvent) => void) | null = null;
   onStarFormation: ((position: [number, number, number], atoms: number) => void) | null = null;
   onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
+  onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
+  onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
+  supernovaMassThreshold = 140;
 
   cosmicEvents: CosmicEvent[] = [];
   firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
@@ -619,6 +622,12 @@ export class Simulator {
             removed.add(a);
             break;
           }
+        } else if (a.type === 'star' && b.type === 'star') {
+          if (r < (a.radius + b.radius) * 0.9) {
+            const collapsed = this.mergeStars(a, b);
+            removed.add(b);
+            if (collapsed) removed.add(a);
+          }
         }
       }
     }
@@ -631,6 +640,7 @@ export class Simulator {
       }
     }
   }
+
 
   private mergeBlackHoles(a: Effector, b: Effector): void {
     const ma = a.strength;
@@ -645,6 +655,40 @@ export class Simulator {
     a.strength = total;
     a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
     a.consumed += b.consumed;
+  }
+
+  private mergeStars(a: Effector, b: Effector): boolean {
+    const ma = a.strength;
+    const mb = b.strength;
+    const total = ma + mb;
+    const mx = (a.x * ma + b.x * mb) / total;
+    const my = (a.y * ma + b.y * mb) / total;
+    const mz = (a.z * ma + b.z * mb) / total;
+    const vx = (a.vx * ma + b.vx * mb) / total;
+    const vy = (a.vy * ma + b.vy * mb) / total;
+    const vz = (a.vz * ma + b.vz * mb) / total;
+
+    if (total > this.supernovaMassThreshold) {
+      const bh = this.addEffector('blackhole', mx, my, mz);
+      bh.vx = vx;
+      bh.vy = vy;
+      bh.vz = vz;
+      bh.strength = total * 0.55;
+      bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
+      this.onSupernova?.([mx, my, mz], total);
+      return true;
+    }
+
+    a.x = mx;
+    a.y = my;
+    a.z = mz;
+    a.vx = vx;
+    a.vy = vy;
+    a.vz = vz;
+    a.strength = total;
+    a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
+    this.onStellarMerger?.([mx, my, mz], total);
+    return false;
   }
 
   private consumeStar(bh: Effector, star: Effector): void {

@@ -38,6 +38,17 @@ sim.onCosmicEvent = (ev) => {
   layout.updateStats(sim, fps);
 };
 
+sim.onStellarMerger = (position, mass) => {
+  scene.pulseOrigin(position);
+  layout.log(`★ + ★ → ★ merger · M=${mass.toFixed(0)}`, 'event');
+};
+
+sim.onSupernova = (position, mass) => {
+  scene.pulseOrigin(position);
+  scene.pulseOrigin(position);
+  layout.log(`✦ Supernova! M=${mass.toFixed(0)} → ● Black hole`, 'event');
+};
+
 const controls = new Controls(
   sim,
   layout.guiHost,
