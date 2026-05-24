@@ -75,6 +75,7 @@ export class Simulator {
   initialPattern: 'uniform' | 'clumpy' = 'uniform';
   initialClumpCount = 6;
   initialClumpSpread = 0.18;
+  initialBoundingRadius = 0.9;
   fusionEnabled = false;
   fusionThresholdReduced = 30;
   fusionEnergyRelease = 8;
@@ -186,13 +187,13 @@ export class Simulator {
     this.starsFormed = 0;
     this.starFormationTimer = 0;
     this.scaleFactor = 1.0;
-    const half = this.boxHalf * 0.9;
+    const half = this.boxHalf * this.initialBoundingRadius;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
     let clumps: [number, number, number][] = [];
     if (this.initialPattern === 'clumpy') {
       const n = Math.max(2, this.initialClumpCount);
-      const inner = this.boxHalf * 0.65;
+      const inner = half * 0.7;
       for (let k = 0; k < n; k++) {
         clumps.push([
           (Math.random() * 2 - 1) * inner,
@@ -218,7 +219,7 @@ export class Simulator {
     this.species[i] = species.id;
     if (clumps.length > 0) {
       const c = clumps[(Math.random() * clumps.length) | 0];
-      const spread = this.boxHalf * this.initialClumpSpread;
+      const spread = half * this.initialClumpSpread;
       let x = c[0] + gaussian() * spread;
       let y = c[1] + gaussian() * spread;
       let z = c[2] + gaussian() * spread;

@@ -15,6 +15,7 @@ export interface Preset {
   starFormationEnabled?: boolean;
   starFormationRadius?: number;
   starFormationCount?: number;
+  initialBoundingRadius?: number;
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
   showEnvironment: boolean;
@@ -23,6 +24,30 @@ export interface Preset {
 }
 
 export const PRESETS: Preset[] = [
+  {
+    name: '빅뱅 (Big Bang)',
+    description: '뜨겁고 작은 점에서 시작 → 급팽창·냉각 → DM 헤일로 형성 → 가스 응집 → 첫 별 탄생.',
+    temperatureK: 3000,
+    gravity: 0,
+    windX: 0,
+    selfGravity: 1.3,
+    bondingEnabled: true,
+    fusionEnabled: false,
+    distribution: { H: 320, He: 60, DM: 480 },
+    renderMode: 'gas',
+    showEnvironment: false,
+    initialTimeScale: 4,
+    yearsPerUnit: 100_000_000,
+    thermostatCoolOnly: true,
+    initialPattern: 'clumpy',
+    initialClumpCount: 4,
+    initialBoundingRadius: 0.08,
+    hubbleRate: 0.18,
+    openBoundary: true,
+    starFormationEnabled: true,
+    starFormationRadius: 0.9,
+    starFormationCount: 12,
+  },
   {
     name: '우주 가스 구름',
     description: '암흑물질 헤일로 + 클럼피 초기 조건. DM 중력 우물에 H/He가 끌려가 응집·구조 형성.',
