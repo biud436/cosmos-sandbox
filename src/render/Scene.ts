@@ -32,6 +32,12 @@ export class Scene {
   private orbitLines: THREE.LineSegments | null = null;
   private orbitGeom: THREE.BufferGeometry | null = null;
   private orbitPositions: Float32Array | null = null;
+  private selectedOrbitLines: THREE.LineSegments | null = null;
+  private selectedOrbitGeom: THREE.BufferGeometry | null = null;
+  private selectedOrbitPositions: Float32Array | null = null;
+  private selectedOrbitLink: THREE.Line | null = null;
+  private selectedOrbitLinkGeom: THREE.BufferGeometry | null = null;
+  private selectedOrbitLinkPositions: Float32Array | null = null;
   private orbitSegments = 64;
   private orbitMaxStars = 300;
   private orbitFrameCounter = 0;
@@ -250,6 +256,8 @@ export class Scene {
         break;
       case 'orbits':
         if (this.orbitLines) this.orbitLines.visible = visible;
+        if (this.selectedOrbitLines) this.selectedOrbitLines.visible = visible;
+        if (this.selectedOrbitLink) this.selectedOrbitLink.visible = visible;
         break;
     }
   }
@@ -382,9 +390,9 @@ export class Scene {
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geom.setDrawRange(0, 0);
     const mat = new THREE.LineBasicMaterial({
-      color: 0x6cc6ff,
+      color: 0x4477aa,
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.18,
       depthWrite: false,
     });
     const lines = new THREE.LineSegments(geom, mat);
@@ -394,6 +402,44 @@ export class Scene {
     this.orbitLines = lines;
     this.orbitGeom = geom;
     this.orbitPositions = positions;
+
+    const selPositions = new Float32Array(verticesPerOrbit * 3);
+    const selGeom = new THREE.BufferGeometry();
+    selGeom.setAttribute('position', new THREE.BufferAttribute(selPositions, 3));
+    selGeom.setDrawRange(0, 0);
+    const selMat = new THREE.LineBasicMaterial({
+      color: 0xffd66a,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const selLines = new THREE.LineSegments(selGeom, selMat);
+    selLines.frustumCulled = false;
+    selLines.visible = this.visibility.orbits;
+    this.scene.add(selLines);
+    this.selectedOrbitLines = selLines;
+    this.selectedOrbitGeom = selGeom;
+    this.selectedOrbitPositions = selPositions;
+
+    const linkPositions = new Float32Array(2 * 3);
+    const linkGeom = new THREE.BufferGeometry();
+    linkGeom.setAttribute('position', new THREE.BufferAttribute(linkPositions, 3));
+    linkGeom.setDrawRange(0, 0);
+    const linkMat = new THREE.LineDashedMaterial({
+      color: 0xffd66a,
+      transparent: true,
+      opacity: 0.65,
+      dashSize: 0.6,
+      gapSize: 0.4,
+      depthWrite: false,
+    });
+    const link = new THREE.Line(linkGeom, linkMat);
+    link.frustumCulled = false;
+    link.visible = this.visibility.orbits;
+    this.scene.add(link);
+    this.selectedOrbitLink = link;
+    this.selectedOrbitLinkGeom = linkGeom;
+    this.selectedOrbitLinkPositions = linkPositions;
   }
 
   setRenderMode(mode: 'solid' | 'gas'): void {
@@ -533,12 +579,18 @@ export class Scene {
     const G = sim.effectorPairG;
     const segments = this.orbitSegments;
     const positions = this.orbitPositions;
+    const selPositions = this.selectedOrbitPositions;
     let writeVertex = 0;
+    let selWriteVertex = 0;
     const maxVerts = this.orbitMaxStars * segments * 2;
+    const selMaxVerts = segments * 2;
+    let selectedHost: Effector | null = null;
+    let selectedStar: Effector | null = null;
 
     for (const star of sim.effectors) {
       if (star.type !== 'star') continue;
-      if (writeVertex >= maxVerts) break;
+      const isSelected = star === this.selectedEffector;
+      if (!isSelected && writeVertex >= maxVerts) continue;
 
       let host: Effector | null = null;
       let bestD2 = Infinity;
@@ -595,6 +647,7 @@ export class Scene {
 
       const semiLatus = a * (1 - e * e);
       let prevX = 0, prevY = 0, prevZ = 0;
+      const writeToMain = writeVertex < maxVerts;
       for (let i = 0; i <= segments; i++) {
         const theta = (2 * Math.PI * i) / segments;
         const r = semiLatus / (1 + e * Math.cos(theta));
@@ -604,22 +657,55 @@ export class Scene {
         const y = host.y + r * (cT * eHatY + sT * perpY);
         const z = host.z + r * (cT * eHatZ + sT * perpZ);
         if (i > 0) {
-          positions[writeVertex * 3 + 0] = prevX;
-          positions[writeVertex * 3 + 1] = prevY;
-          positions[writeVertex * 3 + 2] = prevZ;
-          writeVertex++;
-          positions[writeVertex * 3 + 0] = x;
-          positions[writeVertex * 3 + 1] = y;
-          positions[writeVertex * 3 + 2] = z;
-          writeVertex++;
-          if (writeVertex >= maxVerts) break;
+          if (writeToMain && writeVertex + 1 < maxVerts) {
+            positions[writeVertex * 3 + 0] = prevX;
+            positions[writeVertex * 3 + 1] = prevY;
+            positions[writeVertex * 3 + 2] = prevZ;
+            writeVertex++;
+            positions[writeVertex * 3 + 0] = x;
+            positions[writeVertex * 3 + 1] = y;
+            positions[writeVertex * 3 + 2] = z;
+            writeVertex++;
+          }
+          if (isSelected && selPositions && selWriteVertex + 1 < selMaxVerts) {
+            selPositions[selWriteVertex * 3 + 0] = prevX;
+            selPositions[selWriteVertex * 3 + 1] = prevY;
+            selPositions[selWriteVertex * 3 + 2] = prevZ;
+            selWriteVertex++;
+            selPositions[selWriteVertex * 3 + 0] = x;
+            selPositions[selWriteVertex * 3 + 1] = y;
+            selPositions[selWriteVertex * 3 + 2] = z;
+            selWriteVertex++;
+          }
         }
         prevX = x; prevY = y; prevZ = z;
+      }
+      if (isSelected) {
+        selectedHost = host;
+        selectedStar = star;
       }
     }
 
     this.orbitGeom.setDrawRange(0, writeVertex);
     (this.orbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+
+    if (this.selectedOrbitGeom) {
+      this.selectedOrbitGeom.setDrawRange(0, selWriteVertex);
+      (this.selectedOrbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    }
+
+    if (this.selectedOrbitLink && this.selectedOrbitLinkGeom && this.selectedOrbitLinkPositions) {
+      if (selectedStar && selectedHost) {
+        const p = this.selectedOrbitLinkPositions;
+        p[0] = selectedStar.x; p[1] = selectedStar.y; p[2] = selectedStar.z;
+        p[3] = selectedHost.x; p[4] = selectedHost.y; p[5] = selectedHost.z;
+        this.selectedOrbitLinkGeom.setDrawRange(0, 2);
+        (this.selectedOrbitLinkGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+        this.selectedOrbitLink.computeLineDistances();
+      } else {
+        this.selectedOrbitLinkGeom.setDrawRange(0, 0);
+      }
+    }
   }
 
   private syncEffectors(sim: Simulator, frameDt: number): void {
