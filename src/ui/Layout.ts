@@ -88,6 +88,7 @@ export class Layout {
     onStep: () => void;
     onReset: () => void;
     onTimeScale: (scale: number) => void;
+    onToggleOrbits?: () => void;
   }): void {
     this.presetSelect.innerHTML = '';
     for (const name of opts.presets) {
@@ -122,6 +123,8 @@ export class Layout {
         this.setPausedUI(paused);
       } else if (e.code === 'Period') {
         opts.onStep();
+      } else if (e.code === 'KeyT' && opts.onToggleOrbits) {
+        opts.onToggleOrbits();
       }
     });
 

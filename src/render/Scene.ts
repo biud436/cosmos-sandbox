@@ -31,18 +31,13 @@ export class Scene {
     galaxies: true,
   };
   private galaxyHalos = new Map<Effector, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
-  private orbitLines: THREE.LineSegments | null = null;
-  private orbitGeom: THREE.BufferGeometry | null = null;
-  private orbitPositions: Float32Array | null = null;
   private selectedOrbitLines: THREE.LineSegments | null = null;
   private selectedOrbitGeom: THREE.BufferGeometry | null = null;
   private selectedOrbitPositions: Float32Array | null = null;
   private selectedOrbitLink: THREE.Line | null = null;
   private selectedOrbitLinkGeom: THREE.BufferGeometry | null = null;
   private selectedOrbitLinkPositions: Float32Array | null = null;
-  private orbitSegments = 64;
-  private orbitMaxStars = 300;
-  private orbitFrameCounter = 0;
+  private orbitSegments = 96;
   private bondPositions: Float32Array | null = null;
   private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
   private effectorClock = 0;
@@ -257,7 +252,6 @@ export class Scene {
         if (this.universeShell) this.universeShell.visible = visible;
         break;
       case 'orbits':
-        if (this.orbitLines) this.orbitLines.visible = visible;
         if (this.selectedOrbitLines) this.selectedOrbitLines.visible = visible;
         if (this.selectedOrbitLink) this.selectedOrbitLink.visible = visible;
         break;
@@ -389,24 +383,6 @@ export class Scene {
 
   private buildOrbitRenderer(): void {
     const verticesPerOrbit = this.orbitSegments * 2;
-    const cap = this.orbitMaxStars * verticesPerOrbit * 3;
-    const positions = new Float32Array(cap);
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geom.setDrawRange(0, 0);
-    const mat = new THREE.LineBasicMaterial({
-      color: 0x4477aa,
-      transparent: true,
-      opacity: 0.18,
-      depthWrite: false,
-    });
-    const lines = new THREE.LineSegments(geom, mat);
-    lines.frustumCulled = false;
-    lines.visible = this.visibility.orbits;
-    this.scene.add(lines);
-    this.orbitLines = lines;
-    this.orbitGeom = geom;
-    this.orbitPositions = positions;
 
     const selPositions = new Float32Array(verticesPerOrbit * 3);
     const selGeom = new THREE.BufferGeometry();
@@ -482,14 +458,16 @@ export class Scene {
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
     this.setUniverseScale(sim.scaleFactor);
+
+    // Build frustum FIRST so all syncs can cull against it
+    this.camera.updateMatrixWorld();
+    this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    this.tmpFrustum.setFromProjectionMatrix(this.tmpProjView);
+
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
     this.syncOrbits(sim);
     this.syncGalaxies(sim);
-
-    this.camera.updateMatrixWorld();
-    this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
-    this.tmpFrustum.setFromProjectionMatrix(this.tmpProjView);
 
     if (this.renderMode === 'solid') {
       const counts = new Int32Array(SPECIES.length);
@@ -656,6 +634,9 @@ export class Scene {
       entry.mesh.position.set(bh.x, bh.y, bh.z);
       const radius = Math.max(2.5, (maxR.get(bh) ?? 4) * 1.15);
       entry.mesh.scale.setScalar(radius);
+      this.tmpSphere.center.set(bh.x, bh.y, bh.z);
+      this.tmpSphere.radius = radius;
+      entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
     }
 
     for (const [bh, entry] of this.galaxyHalos) {
@@ -672,206 +653,155 @@ export class Scene {
   }
 
   private syncOrbits(sim: Simulator): void {
-    if (!this.visibility.orbits || !this.orbitGeom || !this.orbitPositions || !this.orbitLines) return;
-    this.orbitFrameCounter++;
-    if (this.orbitFrameCounter % 6 !== 0) return;
+    if (!this.selectedOrbitGeom || !this.selectedOrbitPositions) return;
+    const haveLink = !!(this.selectedOrbitLink && this.selectedOrbitLinkGeom && this.selectedOrbitLinkPositions);
+
+    const clearAll = () => {
+      this.selectedOrbitGeom!.setDrawRange(0, 0);
+      if (haveLink) this.selectedOrbitLinkGeom!.setDrawRange(0, 0);
+    };
+
+    if (!this.visibility.orbits) { clearAll(); return; }
+    const sel = this.selectedEffector;
+    if (!sel || (sel.type !== 'star' && sel.type !== 'blackhole')) { clearAll(); return; }
 
     const bhs: Effector[] = [];
-    const allStars: Effector[] = [];
+    const stars: Effector[] = [];
     for (const e of sim.effectors) {
+      if (e === sel) continue;
       if (e.type === 'blackhole') bhs.push(e);
-      else if (e.type === 'star') allStars.push(e);
-    }
-
-    // If no BHs exist, fall back to using stellar cluster COM as the orbit focus.
-    // This is what stars actually orbit around when the central potential is from
-    // the cluster's own stellar mass rather than a single dominant compact object.
-    let clusterCOM: { x: number; y: number; z: number; vx: number; vy: number; vz: number; M: number } | null = null;
-    if (bhs.length === 0 && allStars.length >= 3) {
-      let mx = 0, my = 0, mz = 0, mvx = 0, mvy = 0, mvz = 0, totM = 0;
-      for (const s of allStars) {
-        mx += s.x * s.strength;
-        my += s.y * s.strength;
-        mz += s.z * s.strength;
-        mvx += s.vx * s.strength;
-        mvy += s.vy * s.strength;
-        mvz += s.vz * s.strength;
-        totM += s.strength;
-      }
-      if (totM > 0) {
-        clusterCOM = {
-          x: mx / totM, y: my / totM, z: mz / totM,
-          vx: mvx / totM, vy: mvy / totM, vz: mvz / totM,
-          M: totM * 0.65,
-        };
-      }
+      else if (e.type === 'star') stars.push(e);
     }
 
     const G = sim.effectorPairG;
     const Gstar = G * sim.starStarGMul;
-    const segments = this.orbitSegments;
-    const positions = this.orbitPositions;
-    const selPositions = this.selectedOrbitPositions;
-    let writeVertex = 0;
-    let selWriteVertex = 0;
-    const maxVerts = this.orbitMaxStars * segments * 2;
-    const selMaxVerts = segments * 2;
-    let selectedHost: { x: number; y: number; z: number } | null = null;
-    let selectedStar: Effector | null = null;
 
-    for (const star of sim.effectors) {
-      if (star.type !== 'star') continue;
-      const isSelected = star === this.selectedEffector;
-      if (!isSelected && writeVertex >= maxVerts) continue;
-
-      let host: { x: number; y: number; z: number } | null = null;
-      let hostEnergy = 0;
-      let hostGM = 0;
-      let hostRx = 0, hostRy = 0, hostRz = 0;
-      let hostVx = 0, hostVy = 0, hostVz = 0;
-      let hostRMag = 0;
-      for (const bh of bhs) {
-        if (bh.strength < star.strength * 1.5) continue;
-        const rxB = star.x - bh.x;
-        const ryB = star.y - bh.y;
-        const rzB = star.z - bh.z;
-        const rMagB = Math.sqrt(rxB * rxB + ryB * ryB + rzB * rzB);
-        if (rMagB < 1e-3) continue;
-        const vxB = star.vx - bh.vx;
-        const vyB = star.vy - bh.vy;
-        const vzB = star.vz - bh.vz;
-        const v2B = vxB * vxB + vyB * vyB + vzB * vzB;
-        const GMB = G * bh.strength;
-        const eB = 0.5 * v2B - GMB / rMagB;
-        if (eB >= 0) continue;
-        if (!host || eB < hostEnergy) {
-          host = bh;
-          hostEnergy = eB;
-          hostGM = GMB;
-          hostRx = rxB; hostRy = ryB; hostRz = rzB;
-          hostVx = vxB; hostVy = vyB; hostVz = vzB;
-          hostRMag = rMagB;
-        }
+    // Find the body the selected effector is orbiting: most-bound BH first.
+    let host: { x: number; y: number; z: number } | null = null;
+    let hostGM = 0, hostEnergy = 0;
+    let hostRx = 0, hostRy = 0, hostRz = 0;
+    let hostVx = 0, hostVy = 0, hostVz = 0;
+    let hostRMag = 0;
+    for (const bh of bhs) {
+      if (bh.strength < sel.strength * 1.2) continue;
+      const rxB = sel.x - bh.x;
+      const ryB = sel.y - bh.y;
+      const rzB = sel.z - bh.z;
+      const rMagB = Math.sqrt(rxB * rxB + ryB * ryB + rzB * rzB);
+      if (rMagB < 1e-3) continue;
+      const vxB = sel.vx - bh.vx;
+      const vyB = sel.vy - bh.vy;
+      const vzB = sel.vz - bh.vz;
+      const v2B = vxB * vxB + vyB * vyB + vzB * vzB;
+      const GMB = G * bh.strength;
+      const eB = 0.5 * v2B - GMB / rMagB;
+      if (eB >= 0) continue;
+      if (!host || eB < hostEnergy) {
+        host = bh;
+        hostEnergy = eB; hostGM = GMB;
+        hostRx = rxB; hostRy = ryB; hostRz = rzB;
+        hostVx = vxB; hostVy = vyB; hostVz = vzB;
+        hostRMag = rMagB;
       }
-      if (!host && clusterCOM) {
-        const rxC = star.x - clusterCOM.x;
-        const ryC = star.y - clusterCOM.y;
-        const rzC = star.z - clusterCOM.z;
+    }
+    // Fall back to stellar cluster COM if no BH host.
+    if (!host && stars.length >= 3) {
+      let mx = 0, my = 0, mz = 0, mvx = 0, mvy = 0, mvz = 0, totM = 0;
+      for (const s of stars) {
+        mx += s.x * s.strength; my += s.y * s.strength; mz += s.z * s.strength;
+        mvx += s.vx * s.strength; mvy += s.vy * s.strength; mvz += s.vz * s.strength;
+        totM += s.strength;
+      }
+      if (totM > 0) {
+        mx /= totM; my /= totM; mz /= totM;
+        mvx /= totM; mvy /= totM; mvz /= totM;
+        const rxC = sel.x - mx;
+        const ryC = sel.y - my;
+        const rzC = sel.z - mz;
         const rMagC = Math.sqrt(rxC * rxC + ryC * ryC + rzC * rzC);
         if (rMagC > 1e-3) {
-          const vxC = star.vx - clusterCOM.vx;
-          const vyC = star.vy - clusterCOM.vy;
-          const vzC = star.vz - clusterCOM.vz;
+          const vxC = sel.vx - mvx;
+          const vyC = sel.vy - mvy;
+          const vzC = sel.vz - mvz;
           const v2C = vxC * vxC + vyC * vyC + vzC * vzC;
-          const GMC = Gstar * clusterCOM.M;
+          const GMC = Gstar * totM * 0.65;
           const eC = 0.5 * v2C - GMC / rMagC;
           if (eC < 0) {
-            host = clusterCOM;
-            hostEnergy = eC;
-            hostGM = GMC;
+            host = { x: mx, y: my, z: mz };
+            hostEnergy = eC; hostGM = GMC;
             hostRx = rxC; hostRy = ryC; hostRz = rzC;
             hostVx = vxC; hostVy = vyC; hostVz = vzC;
             hostRMag = rMagC;
           }
         }
       }
-      if (!host) continue;
-
-      const GM = hostGM;
-      const rx = hostRx;
-      const ry = hostRy;
-      const rz = hostRz;
-      const vx = hostVx;
-      const vy = hostVy;
-      const vz = hostVz;
-      const rMag = hostRMag;
-      const energy = hostEnergy;
-      const a = -GM / (2 * energy);
-
-      const Lx = ry * vz - rz * vy;
-      const Ly = rz * vx - rx * vz;
-      const Lz = rx * vy - ry * vx;
-      const L2 = Lx * Lx + Ly * Ly + Lz * Lz;
-      if (L2 < 1e-6) continue;
-
-      const evx = (vy * Lz - vz * Ly) / GM - rx / rMag;
-      const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
-      const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
-      const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
-      if (e >= 0.85) continue;
-
-      const eHatX = e > 1e-6 ? evx / e : rx / rMag;
-      const eHatY = e > 1e-6 ? evy / e : ry / rMag;
-      const eHatZ = e > 1e-6 ? evz / e : rz / rMag;
-      const pPx = Ly * eHatZ - Lz * eHatY;
-      const pPy = Lz * eHatX - Lx * eHatZ;
-      const pPz = Lx * eHatY - Ly * eHatX;
-      const pMag = Math.sqrt(pPx * pPx + pPy * pPy + pPz * pPz);
-      if (pMag < 1e-6) continue;
-      const perpX = pPx / pMag;
-      const perpY = pPy / pMag;
-      const perpZ = pPz / pMag;
-
-      const semiLatus = a * (1 - e * e);
-      let prevX = 0, prevY = 0, prevZ = 0;
-      const writeToMain = writeVertex < maxVerts;
-      for (let i = 0; i <= segments; i++) {
-        const theta = (2 * Math.PI * i) / segments;
-        const r = semiLatus / (1 + e * Math.cos(theta));
-        const cT = Math.cos(theta);
-        const sT = Math.sin(theta);
-        const x = host.x + r * (cT * eHatX + sT * perpX);
-        const y = host.y + r * (cT * eHatY + sT * perpY);
-        const z = host.z + r * (cT * eHatZ + sT * perpZ);
-        if (i > 0) {
-          if (writeToMain && writeVertex + 1 < maxVerts) {
-            positions[writeVertex * 3 + 0] = prevX;
-            positions[writeVertex * 3 + 1] = prevY;
-            positions[writeVertex * 3 + 2] = prevZ;
-            writeVertex++;
-            positions[writeVertex * 3 + 0] = x;
-            positions[writeVertex * 3 + 1] = y;
-            positions[writeVertex * 3 + 2] = z;
-            writeVertex++;
-          }
-          if (isSelected && selPositions && selWriteVertex + 1 < selMaxVerts) {
-            selPositions[selWriteVertex * 3 + 0] = prevX;
-            selPositions[selWriteVertex * 3 + 1] = prevY;
-            selPositions[selWriteVertex * 3 + 2] = prevZ;
-            selWriteVertex++;
-            selPositions[selWriteVertex * 3 + 0] = x;
-            selPositions[selWriteVertex * 3 + 1] = y;
-            selPositions[selWriteVertex * 3 + 2] = z;
-            selWriteVertex++;
-          }
-        }
-        prevX = x; prevY = y; prevZ = z;
-      }
-      if (isSelected) {
-        selectedHost = host;
-        selectedStar = star;
-      }
     }
+    if (!host) { clearAll(); return; }
 
-    this.orbitGeom.setDrawRange(0, writeVertex);
-    (this.orbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+    const GM = hostGM;
+    const rx = hostRx, ry = hostRy, rz = hostRz;
+    const vx = hostVx, vy = hostVy, vz = hostVz;
+    const rMag = hostRMag;
+    const a = -GM / (2 * hostEnergy);
 
-    if (this.selectedOrbitGeom) {
-      this.selectedOrbitGeom.setDrawRange(0, selWriteVertex);
-      (this.selectedOrbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-    }
+    const Lx = ry * vz - rz * vy;
+    const Ly = rz * vx - rx * vz;
+    const Lz = rx * vy - ry * vx;
+    if (Lx * Lx + Ly * Ly + Lz * Lz < 1e-6) { clearAll(); return; }
 
-    if (this.selectedOrbitLink && this.selectedOrbitLinkGeom && this.selectedOrbitLinkPositions) {
-      if (selectedStar && selectedHost) {
-        const p = this.selectedOrbitLinkPositions;
-        p[0] = selectedStar.x; p[1] = selectedStar.y; p[2] = selectedStar.z;
-        p[3] = selectedHost.x; p[4] = selectedHost.y; p[5] = selectedHost.z;
-        this.selectedOrbitLinkGeom.setDrawRange(0, 2);
-        (this.selectedOrbitLinkGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-        this.selectedOrbitLink.computeLineDistances();
-      } else {
-        this.selectedOrbitLinkGeom.setDrawRange(0, 0);
+    const evx = (vy * Lz - vz * Ly) / GM - rx / rMag;
+    const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
+    const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
+    const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
+    if (e >= 0.95) { clearAll(); return; }
+
+    const eHatX = e > 1e-6 ? evx / e : rx / rMag;
+    const eHatY = e > 1e-6 ? evy / e : ry / rMag;
+    const eHatZ = e > 1e-6 ? evz / e : rz / rMag;
+    const pPx = Ly * eHatZ - Lz * eHatY;
+    const pPy = Lz * eHatX - Lx * eHatZ;
+    const pPz = Lx * eHatY - Ly * eHatX;
+    const pMag = Math.sqrt(pPx * pPx + pPy * pPy + pPz * pPz);
+    if (pMag < 1e-6) { clearAll(); return; }
+    const perpX = pPx / pMag;
+    const perpY = pPy / pMag;
+    const perpZ = pPz / pMag;
+
+    const segments = this.orbitSegments;
+    const semiLatus = a * (1 - e * e);
+    const selPositions = this.selectedOrbitPositions;
+    let write = 0;
+    let prevX = 0, prevY = 0, prevZ = 0;
+    for (let i = 0; i <= segments; i++) {
+      const theta = (2 * Math.PI * i) / segments;
+      const r = semiLatus / (1 + e * Math.cos(theta));
+      const cT = Math.cos(theta);
+      const sT = Math.sin(theta);
+      const x = host.x + r * (cT * eHatX + sT * perpX);
+      const y = host.y + r * (cT * eHatY + sT * perpY);
+      const z = host.z + r * (cT * eHatZ + sT * perpZ);
+      if (i > 0 && write + 1 < segments * 2) {
+        selPositions[write * 3 + 0] = prevX;
+        selPositions[write * 3 + 1] = prevY;
+        selPositions[write * 3 + 2] = prevZ;
+        write++;
+        selPositions[write * 3 + 0] = x;
+        selPositions[write * 3 + 1] = y;
+        selPositions[write * 3 + 2] = z;
+        write++;
       }
+      prevX = x; prevY = y; prevZ = z;
+    }
+    this.selectedOrbitGeom.setDrawRange(0, write);
+    (this.selectedOrbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+
+    if (haveLink) {
+      const p = this.selectedOrbitLinkPositions!;
+      p[0] = sel.x; p[1] = sel.y; p[2] = sel.z;
+      p[3] = host.x; p[4] = host.y; p[5] = host.z;
+      this.selectedOrbitLinkGeom!.setDrawRange(0, 2);
+      (this.selectedOrbitLinkGeom!.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+      this.selectedOrbitLink!.computeLineDistances();
     }
   }
 
@@ -891,10 +821,14 @@ export class Scene {
         this.effectorViews.set(eff, view);
       }
       const typeVisible = this.visibility[this.visibilityKeyFor(eff.type)];
-      view.group.visible = typeVisible;
-      if (!typeVisible) continue;
-      view.group.position.set(eff.x, eff.y, eff.z);
       const scaleBoost = eff.type === 'star' ? 0.85 : eff.type === 'blackhole' ? 1.0 : 1.0;
+      const visualR = eff.radius * scaleBoost * 3.0;
+      this.tmpSphere.center.set(eff.x, eff.y, eff.z);
+      this.tmpSphere.radius = visualR;
+      const inFrustum = this.tmpFrustum.intersectsSphere(this.tmpSphere);
+      view.group.visible = typeVisible && inFrustum;
+      if (!view.group.visible) continue;
+      view.group.position.set(eff.x, eff.y, eff.z);
       view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;
