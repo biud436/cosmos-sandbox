@@ -162,12 +162,40 @@
         border-radius: 8px; pointer-events: none;
       }
 
+      .event-banner {
+        position: fixed; top: 80px; left: 50%;
+        transform: translate(-50%, -20px);
+        padding: 14px 32px;
+        background: linear-gradient(180deg, rgba(40, 32, 60, 0.94), rgba(20, 16, 30, 0.94));
+        border: 1px solid rgba(255, 200, 110, 0.5);
+        border-radius: 10px;
+        font-size: 14px; letter-spacing: 1.5px;
+        color: var(--text); text-align: center; min-width: 280px;
+        box-shadow: 0 0 32px rgba(255, 200, 110, 0.3), 0 8px 32px rgba(0,0,0,0.7);
+        opacity: 0; pointer-events: none; z-index: 9999;
+        transition: opacity 0.45s ease, transform 0.45s ease;
+      }
+      .event-banner.show { opacity: 1; transform: translate(-50%, 0); }
+      .event-banner .ev-name { font-weight: 700; color: #ffd28a; font-size: 16px; letter-spacing: 2px; }
+      .event-banner .ev-desc { color: var(--text-dim); font-size: 12px; margin-top: 4px; letter-spacing: 0.3px; }
+
+      #star-body .star-row {
+        display: grid; grid-template-columns: 14px 1fr auto;
+        align-items: center; gap: 8px;
+        padding: 3px 6px; border-radius: 3px;
+      }
+      #star-body .star-row:hover { background: var(--panel-hi); cursor: pointer; }
+      #star-body .star-dot { width: 8px; height: 8px; border-radius: 50%; }
+      #star-body .star-name { color: var(--text); font-size: 11px; font-family: ui-monospace, monospace; }
+      #star-body .star-mass { color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
       ::-webkit-scrollbar-track { background: transparent; }
     </style>
   </head>
   <body>
+    <div id="event-banner" class="event-banner"></div>
     <div id="shell">
       <div id="toolbar" class="panel">
         <span class="title">COSMOS SANDBOX</span>
@@ -199,6 +227,8 @@
         <div class="tools-body" id="tools-body"></div>
         <div class="panel-header">Hierarchy</div>
         <div class="panel-body" id="hier-body"></div>
+        <div class="panel-header">★ Stars · Compact Objects</div>
+        <div class="panel-body" id="star-body" style="max-height: 220px"></div>
       </div>
 
       <div id="center" class="panel">

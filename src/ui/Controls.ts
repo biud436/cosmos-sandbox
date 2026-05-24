@@ -189,6 +189,7 @@ export class Controls {
     if (preset.starFormationCount !== undefined) this.sim.starFormationCount = preset.starFormationCount;
     if (preset.starFormationCooldown !== undefined) this.sim.starFormationCooldown = preset.starFormationCooldown;
     this.sim.initialBoundingRadius = preset.initialBoundingRadius ?? 0.9;
+    this.sim.cosmicEvents = preset.cosmicEvents ?? [];
     this.scene.setRenderMode(preset.renderMode);
     this.scene.setEnvironmentVisible(preset.showEnvironment && !this.sim.openBoundary);
 

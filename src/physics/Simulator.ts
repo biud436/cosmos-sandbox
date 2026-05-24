@@ -34,6 +34,13 @@ export interface MoleculeEntry {
   color: number;
 }
 
+export interface CosmicEvent {
+  time: number;
+  name: string;
+  description: string;
+  action: (sim: Simulator) => void;
+}
+
 export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer';
 
 export interface Effector {
@@ -47,6 +54,8 @@ export interface Effector {
   radius: number;
   strength: number;
   consumed: number;
+  name?: string;
+  bornAt: number;
 }
 
 interface PairParams {
@@ -108,6 +117,12 @@ export class Simulator {
 
   onFusion: ((event: FusionEvent) => void) | null = null;
   onStarFormation: ((position: [number, number, number], atoms: number) => void) | null = null;
+  onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
+
+  cosmicEvents: CosmicEvent[] = [];
+  private firedEventCount = 0;
+  private starCounter = 0;
+  private bhCounter = 0;
 
   private grid: SpatialGrid;
   private bh: BarnesHut;
@@ -188,6 +203,9 @@ export class Simulator {
     this.starsFormed = 0;
     this.starFormationTimer = 0;
     this.scaleFactor = 1.0;
+    this.firedEventCount = 0;
+    this.starCounter = 0;
+    this.bhCounter = 0;
     const half = this.boxHalf * this.initialBoundingRadius;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
@@ -305,6 +323,14 @@ export class Simulator {
     }
 
     this.simTime += dt;
+
+    while (this.firedEventCount < this.cosmicEvents.length) {
+      const ev = this.cosmicEvents[this.firedEventCount];
+      if (ev.time > this.simTime) break;
+      ev.action(this);
+      this.onCosmicEvent?.(ev);
+      this.firedEventCount++;
+    }
   }
 
   private applyHubble(dt: number): void {
@@ -366,6 +392,79 @@ export class Simulator {
     if (removed.length === 0) return;
     removed.sort((a, b) => b - a);
     for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
+  }
+
+  bbnConvert(fraction: number): { pairs: number; helium: number } {
+    const heId = SPECIES.findIndex((s) => s.name === 'He');
+    if (heId < 0) return { pairs: 0, helium: 0 };
+    const hList: number[] = [];
+    for (let i = 0; i < this.count; i++) if (this.species[i] === 0) hList.push(i);
+    for (let i = hList.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = hList[i]; hList[i] = hList[j]; hList[j] = tmp;
+    }
+    const toConvert = Math.floor(hList.length * fraction);
+    const pairCount = toConvert - (toConvert % 2);
+    const removed: number[] = [];
+    for (let k = 0; k < pairCount; k += 2) {
+      const a = hList[k];
+      const b = hList[k + 1];
+      const mx = (this.positions[a * 3 + 0] + this.positions[b * 3 + 0]) * 0.5;
+      const my = (this.positions[a * 3 + 1] + this.positions[b * 3 + 1]) * 0.5;
+      const mz = (this.positions[a * 3 + 2] + this.positions[b * 3 + 2]) * 0.5;
+      const vx = (this.velocities[a * 3 + 0] + this.velocities[b * 3 + 0]) * 0.5;
+      const vy = (this.velocities[a * 3 + 1] + this.velocities[b * 3 + 1]) * 0.5;
+      const vz = (this.velocities[a * 3 + 2] + this.velocities[b * 3 + 2]) * 0.5;
+      this.removeBondsForParticle(a);
+      this.species[a] = heId;
+      this.positions[a * 3 + 0] = mx;
+      this.positions[a * 3 + 1] = my;
+      this.positions[a * 3 + 2] = mz;
+      this.velocities[a * 3 + 0] = vx;
+      this.velocities[a * 3 + 1] = vy;
+      this.velocities[a * 3 + 2] = vz;
+      removed.push(b);
+    }
+    removed.sort((x, y) => y - x);
+    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
+    return { pairs: pairCount / 2, helium: pairCount / 2 };
+  }
+
+  forceFormStars(maxStars: number, radius: number, minClusterSize: number): number {
+    const r2 = radius * radius;
+    const candidates: { center: number; members: number[] }[] = [];
+    for (let i = 0; i < this.count; i++) {
+      if (this.species[i] !== 0) continue;
+      const members: number[] = [i];
+      const xi = this.positions[i * 3 + 0];
+      const yi = this.positions[i * 3 + 1];
+      const zi = this.positions[i * 3 + 2];
+      for (let j = 0; j < this.count; j++) {
+        if (j === i || this.species[j] !== 0) continue;
+        const dx = this.positions[j * 3 + 0] - xi;
+        const dy = this.positions[j * 3 + 1] - yi;
+        const dz = this.positions[j * 3 + 2] - zi;
+        if (dx * dx + dy * dy + dz * dz < r2) members.push(j);
+      }
+      if (members.length >= minClusterSize) candidates.push({ center: i, members });
+    }
+    candidates.sort((a, b) => b.members.length - a.members.length);
+    const claimed = new Uint8Array(this.count);
+    const removed: number[] = [];
+    let formed = 0;
+    for (const cand of candidates) {
+      if (formed >= maxStars) break;
+      let overlap = false;
+      for (const idx of cand.members) if (claimed[idx]) { overlap = true; break; }
+      if (overlap) continue;
+      for (const idx of cand.members) claimed[idx] = 1;
+      this.spawnStarFromCluster(cand.members);
+      for (const idx of cand.members) removed.push(idx);
+      formed++;
+    }
+    removed.sort((a, b) => b - a);
+    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
+    return formed;
   }
 
   private spawnStarFromCluster(indices: number[]): void {
@@ -618,7 +717,14 @@ export class Simulator {
       freezer:   { radius: 3.0, strength: 0.92 },
     };
     const p = presets[type];
-    const e: Effector = { type, x, y, z, vx: 0, vy: 0, vz: 0, radius: p.radius, strength: p.strength, consumed: 0 };
+    const e: Effector = {
+      type, x, y, z,
+      vx: 0, vy: 0, vz: 0,
+      radius: p.radius, strength: p.strength, consumed: 0,
+      bornAt: this.simTime,
+    };
+    if (type === 'star') e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
+    else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
     this.effectors.push(e);
     return e;
   }

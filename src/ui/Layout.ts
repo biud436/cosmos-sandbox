@@ -1,5 +1,5 @@
 import { SPECIES } from '../physics/types';
-import { MoleculeEntry, Simulator } from '../physics/Simulator';
+import { CosmicEvent, Effector, MoleculeEntry, Simulator } from '../physics/Simulator';
 import { formatCosmicTime } from './timeFormat';
 
 export class Layout {
@@ -32,7 +32,12 @@ export class Layout {
   private readonly viewport = document.getElementById('viewport')!;
 
   private hierRows = new Map<string, { dot: HTMLElement; name: HTMLElement; count: HTMLElement; row: HTMLElement }>();
+  private starBody = document.getElementById('star-body')!;
+  private starRows = new Map<Effector, HTMLElement>();
+  private banner = document.getElementById('event-banner')!;
+  private bannerTimer: number | null = null;
   private yearsPerUnit = 10;
+  private onSelectEffector: ((eff: Effector) => void) | null = null;
 
   constructor() {
     SPECIES;
@@ -143,6 +148,7 @@ export class Layout {
   updateStats(sim: Simulator, fps: number): void {
     const stats = sim.stats();
     this.updateHierarchy(sim.getMoleculeBreakdown());
+    this.updateStarCatalog(sim.effectors);
 
     this.hudFps.textContent = fps.toFixed(0);
     this.hudN.textContent = String(stats.count);
@@ -167,6 +173,59 @@ export class Layout {
 
   setDropHighlight(active: boolean): void {
     this.viewport.classList.toggle('drop-target', active);
+  }
+
+  showEvent(ev: CosmicEvent): void {
+    this.banner.innerHTML = `<div class="ev-name">${ev.name}</div><div class="ev-desc">${ev.description}</div>`;
+    this.banner.classList.add('show');
+    if (this.bannerTimer !== null) window.clearTimeout(this.bannerTimer);
+    this.bannerTimer = window.setTimeout(() => this.banner.classList.remove('show'), 3800);
+  }
+
+  setEffectorClickHandler(handler: (eff: Effector) => void): void {
+    this.onSelectEffector = handler;
+  }
+
+  private updateStarCatalog(effectors: Effector[]): void {
+    const seen = new Set<Effector>();
+    const named = effectors.filter((e) => !!e.name);
+    named.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'star' ? -1 : 1;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+    for (const eff of named) {
+      seen.add(eff);
+      let row = this.starRows.get(eff);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'star-row';
+        const dot = document.createElement('span');
+        dot.className = 'star-dot';
+        const name = document.createElement('span');
+        name.className = 'star-name';
+        const mass = document.createElement('span');
+        mass.className = 'star-mass';
+        row.append(dot, name, mass);
+        row.addEventListener('click', () => this.onSelectEffector?.(eff));
+        this.starBody.appendChild(row);
+        this.starRows.set(eff, row);
+      }
+      const dot = row.children[0] as HTMLElement;
+      const nameEl = row.children[1] as HTMLElement;
+      const massEl = row.children[2] as HTMLElement;
+      const color = eff.type === 'star' ? '#ffd28a' : '#9affb2';
+      dot.style.background = color;
+      dot.style.boxShadow = `0 0 6px ${color}`;
+      nameEl.textContent = eff.name || '';
+      massEl.textContent = `M ${eff.strength.toFixed(0)}`;
+      this.starBody.appendChild(row);
+    }
+    for (const [eff, row] of this.starRows) {
+      if (!seen.has(eff)) {
+        row.remove();
+        this.starRows.delete(eff);
+      }
+    }
   }
 
   log(message: string, kind: 'info' | 'event' = 'info'): void {

@@ -1,3 +1,5 @@
+import type { CosmicEvent } from '../physics/Simulator';
+
 export interface Preset {
   name: string;
   description: string;
@@ -18,6 +20,7 @@ export interface Preset {
   starFormationCount?: number;
   starFormationCooldown?: number;
   initialBoundingRadius?: number;
+  cosmicEvents?: CosmicEvent[];
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
   showEnvironment: boolean;
@@ -51,6 +54,45 @@ export const PRESETS: Preset[] = [
     starFormationRadius: 1.4,
     starFormationCount: 8,
     starFormationCooldown: 0.2,
+    cosmicEvents: [
+      {
+        time: 0.5,
+        name: 'Inflation Ends',
+        description: '인플레이션 종료. 팽창이 급격히 감속합니다.',
+        action: (sim) => { sim.hubbleDecay = Math.max(sim.hubbleDecay, 1.2); },
+      },
+      {
+        time: 2.0,
+        name: 'Big Bang Nucleosynthesis',
+        description: '빅뱅 핵합성 — 수소가 헬륨으로 변환됩니다.',
+        action: (sim) => { sim.bbnConvert(0.44); },
+      },
+      {
+        time: 5.0,
+        name: 'Recombination · CMB',
+        description: '원자 형성, 우주배경복사 방출. 우주가 투명해집니다.',
+        action: (sim) => { sim.targetTemperatureK = Math.min(sim.targetTemperatureK, 8); },
+      },
+      {
+        time: 12.0,
+        name: 'First Stars · Population III',
+        description: '암흑 시대의 끝. 최초의 별이 탄생합니다.',
+        action: (sim) => { sim.forceFormStars(4, 2.0, 5); },
+      },
+      {
+        time: 25.0,
+        name: 'Galaxy Assembly',
+        description: '별 다발이 자라 원시 은하를 이룹니다.',
+        action: (sim) => {
+          sim.forceFormStars(6, 2.5, 4);
+          let sumX = 0, sumY = 0, sumZ = 0, count = 0;
+          for (const e of sim.effectors) {
+            if (e.type === 'star') { sumX += e.x; sumY += e.y; sumZ += e.z; count++; }
+          }
+          if (count > 0) sim.addEffector('blackhole', sumX / count, sumY / count, sumZ / count);
+        },
+      },
+    ],
   },
   {
     name: '우주 가스 구름',

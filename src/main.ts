@@ -32,6 +32,11 @@ sim.onStarFormation = (position, atoms) => {
   layout.log(`★ Star formed from ${atoms} atoms`, 'event');
 };
 
+sim.onCosmicEvent = (ev) => {
+  layout.showEvent(ev);
+  layout.log(`◆ ${ev.name} — ${ev.description}`, 'event');
+};
+
 const controls = new Controls(
   sim,
   layout.guiHost,
@@ -88,6 +93,11 @@ new Tools({
 
 controls.setDeleteHandler((eff) => {
   sim.removeEffector(eff);
+});
+
+layout.setEffectorClickHandler((eff) => {
+  scene.setSelectedEffector(eff);
+  controls.showSelectedEffector(eff);
 });
 
 sim.onEffectorRemoved = (eff, reason) => {
