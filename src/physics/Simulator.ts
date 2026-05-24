@@ -116,7 +116,7 @@ export class Simulator {
   starHeatRate = 0.4;
   repulsorG = 4;
   freezerDamp = 0.92;
-  effectorPairG = 0.25;
+  effectorPairG = 0.15;
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -289,33 +289,68 @@ export class Simulator {
     let totalStars = 0;
     let totalBHs = 0;
     const usedCenters: [number, number, number][] = [];
-    const minSeparation2 = (opts.radius * 1.3) * (opts.radius * 1.3);
+    const minSeparation2 = (opts.radius * 3.5) * (opts.radius * 3.5);
     const R2 = opts.radius * opts.radius;
     const groupSize = Math.max(2, opts.starClusterSize);
     const maxAttempts = opts.galaxyCount * 4;
+    const wantBH = !!opts.centralBHMass && opts.centralBHMass > 0;
+    const bhRadius = opts.centralBHRadius ?? 0.35;
+    const minStarR = bhRadius * 4;
+    const minStarR2 = minStarR * minStarR;
     let attempts = 0;
     while (galaxiesFormed < opts.galaxyCount && attempts < maxAttempts) {
       attempts++;
       const seed = this.findDensestHSeed(opts.radius, usedCenters, minSeparation2);
       if (seed === -1) break;
-      const cx = this.positions[seed * 3 + 0];
-      const cy = this.positions[seed * 3 + 1];
-      const cz = this.positions[seed * 3 + 2];
+      const sx = this.positions[seed * 3 + 0];
+      const sy = this.positions[seed * 3 + 1];
+      const sz = this.positions[seed * 3 + 2];
 
       const pool: number[] = [];
       for (let j = 0; j < this.count; j++) {
         if (this.species[j] !== 0) continue;
-        const dx = this.positions[j * 3 + 0] - cx;
-        const dy = this.positions[j * 3 + 1] - cy;
-        const dz = this.positions[j * 3 + 2] - cz;
+        const dx = this.positions[j * 3 + 0] - sx;
+        const dy = this.positions[j * 3 + 1] - sy;
+        const dz = this.positions[j * 3 + 2] - sz;
         if (dx * dx + dy * dy + dz * dz < R2) pool.push(j);
       }
       if (pool.length < groupSize) {
-        usedCenters.push([cx, cy, cz]);
+        usedCenters.push([sx, sy, sz]);
         continue;
       }
 
-      pool.sort((a, b) => {
+      // Galaxy COM (more accurate than seed position alone)
+      let cx = 0, cy = 0, cz = 0, cvx = 0, cvy = 0, cvz = 0, comM = 0;
+      for (const idx of pool) {
+        const m = SPECIES[this.species[idx]].mass;
+        cx += this.positions[idx * 3 + 0] * m;
+        cy += this.positions[idx * 3 + 1] * m;
+        cz += this.positions[idx * 3 + 2] * m;
+        cvx += this.velocities[idx * 3 + 0] * m;
+        cvy += this.velocities[idx * 3 + 1] * m;
+        cvz += this.velocities[idx * 3 + 2] * m;
+        comM += m;
+      }
+      if (comM <= 0) { usedCenters.push([sx, sy, sz]); continue; }
+      cx /= comM; cy /= comM; cz /= comM;
+      cvx /= comM; cvy /= comM; cvz /= comM;
+
+      // Split pool: inner H absorbed into BH, outer H forms star halo
+      const coreIndices: number[] = [];
+      const haloIndices: number[] = [];
+      if (wantBH) {
+        for (const idx of pool) {
+          const dx = this.positions[idx * 3 + 0] - cx;
+          const dy = this.positions[idx * 3 + 1] - cy;
+          const dz = this.positions[idx * 3 + 2] - cz;
+          if (dx * dx + dy * dy + dz * dz < minStarR2) coreIndices.push(idx);
+          else haloIndices.push(idx);
+        }
+      } else {
+        for (const idx of pool) haloIndices.push(idx);
+      }
+
+      haloIndices.sort((a, b) => {
         const ax = this.positions[a * 3 + 0] - cx;
         const ay = this.positions[a * 3 + 1] - cy;
         const az = this.positions[a * 3 + 2] - cz;
@@ -325,16 +360,27 @@ export class Simulator {
         return (ax * ax + ay * ay + az * az) - (bx * bx + by * by + bz * bz);
       });
 
-      const maxStars = Math.min(opts.starsPerGalaxy, Math.floor(pool.length / groupSize));
-      if (maxStars < 1) {
-        usedCenters.push([cx, cy, cz]);
-        continue;
+      const toRemove: number[] = [];
+      let bh: Effector | null = null;
+      if (wantBH) {
+        let absorbedMass = 0;
+        for (const idx of coreIndices) {
+          absorbedMass += SPECIES[this.species[idx]].mass;
+          toRemove.push(idx);
+        }
+        bh = this.addEffector('blackhole', cx, cy, cz);
+        bh.strength = (opts.centralBHMass ?? 0) + absorbedMass * 5;
+        bh.radius = bhRadius;
+        bh.vx = cvx;
+        bh.vy = cvy;
+        bh.vz = cvz;
+        totalBHs++;
       }
 
+      const haloMaxStars = Math.min(opts.starsPerGalaxy, Math.floor(haloIndices.length / groupSize));
       const newStars: Effector[] = [];
-      const toRemove: number[] = [];
-      for (let k = 0; k < maxStars; k++) {
-        const slice = pool.slice(k * groupSize, (k + 1) * groupSize);
+      for (let k = 0; k < haloMaxStars; k++) {
+        const slice = haloIndices.slice(k * groupSize, (k + 1) * groupSize);
         const star = this.spawnStarFromCluster(slice);
         if (star) {
           newStars.push(star);
@@ -348,47 +394,33 @@ export class Simulator {
       const axLen = Math.hypot(axisX, axisY, axisZ) || 1;
       axisX /= axLen; axisY /= axLen; axisZ /= axLen;
 
-      if (opts.centralBHMass && opts.centralBHMass > 0 && newStars.length > 0) {
-        let mx = 0, my = 0, mz = 0, vxm = 0, vym = 0, vzm = 0, totM = 0;
+      if (bh && newStars.length > 0) {
+        const M = bh.strength;
+        const Gpair = this.effectorPairG;
+        const minOrbR = bh.radius * 4;
         for (const s of newStars) {
-          mx += s.x * s.strength;
-          my += s.y * s.strength;
-          mz += s.z * s.strength;
-          vxm += s.vx * s.strength;
-          vym += s.vy * s.strength;
-          vzm += s.vz * s.strength;
-          totM += s.strength;
-        }
-        if (totM > 0) {
-          mx /= totM; my /= totM; mz /= totM;
-          vxm /= totM; vym /= totM; vzm /= totM;
-          const bh = this.addEffector('blackhole', mx, my, mz);
-          bh.strength = opts.centralBHMass;
-          bh.radius = opts.centralBHRadius ?? 0.35;
-          bh.vx = vxm;
-          bh.vy = vym;
-          bh.vz = vzm;
-          totalBHs++;
-
-          const M = opts.centralBHMass;
-          const Gpair = this.effectorPairG;
-          for (const s of newStars) {
-            const rx = s.x - mx;
-            const ry = s.y - my;
-            const rz = s.z - mz;
-            const r = Math.hypot(rx, ry, rz);
-            if (r < 0.3) continue;
-            const tx = axisY * rz - axisZ * ry;
-            const ty = axisZ * rx - axisX * rz;
-            const tz = axisX * ry - axisY * rx;
-            const tlen = Math.hypot(tx, ty, tz);
-            if (tlen < 1e-3) continue;
-            const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
-            const k = vCirc / tlen;
-            s.vx = vxm + tx * k;
-            s.vy = vym + ty * k;
-            s.vz = vzm + tz * k;
+          let rx = s.x - bh.x;
+          let ry = s.y - bh.y;
+          let rz = s.z - bh.z;
+          let r = Math.hypot(rx, ry, rz);
+          if (r < minOrbR) {
+            const scale = minOrbR / Math.max(r, 1e-3);
+            s.x = bh.x + rx * scale;
+            s.y = bh.y + ry * scale;
+            s.z = bh.z + rz * scale;
+            rx = s.x - bh.x; ry = s.y - bh.y; rz = s.z - bh.z;
+            r = minOrbR;
           }
+          const tx = axisY * rz - axisZ * ry;
+          const ty = axisZ * rx - axisX * rz;
+          const tz = axisX * ry - axisY * rx;
+          const tlen = Math.hypot(tx, ty, tz);
+          if (tlen < 1e-3) continue;
+          const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
+          const k = vCirc / tlen;
+          s.vx = cvx + tx * k;
+          s.vy = cvy + ty * k;
+          s.vz = cvz + tz * k;
         }
       } else if (newStars.length >= 2) {
         this.spinAroundAxis(newStars, [axisX, axisY, axisZ], [cx, cy, cz], opts.orbitalSpeed);
@@ -582,11 +614,8 @@ export class Simulator {
       this.velocities[i * 3 + 1] *= drag;
       this.velocities[i * 3 + 2] *= drag;
     }
-    for (const e of this.effectors) {
-      e.x *= factor;
-      e.y *= factor;
-      e.z *= factor;
-    }
+    // Effectors are gravitationally bound systems — decouple from Hubble flow
+    // so orbital radii don't expand while velocities stay the same.
   }
 
   currentHubble(): number {

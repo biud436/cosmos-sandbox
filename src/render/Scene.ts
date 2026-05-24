@@ -727,7 +727,7 @@ export class Scene {
       view.group.visible = typeVisible;
       if (!typeVisible) continue;
       view.group.position.set(eff.x, eff.y, eff.z);
-      const scaleBoost = eff.type === 'star' ? 1.8 : eff.type === 'blackhole' ? 1.3 : 1.0;
+      const scaleBoost = eff.type === 'star' ? 1.8 : eff.type === 'blackhole' ? 3.2 : 1.0;
       view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;

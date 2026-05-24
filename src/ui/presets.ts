@@ -50,7 +50,7 @@ export const PRESETS: Preset[] = [
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
     initialClumpCount: 14,
-    initialClumpSpread: 0.035,
+    initialClumpSpread: 0.015,
     initialBoundingRadius: 0.85,
     initialVelocityScale: 0.15,
     hubbleRate: 0.12,
