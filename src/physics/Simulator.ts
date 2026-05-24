@@ -276,9 +276,12 @@ export class Simulator {
     radius: number;
     starClusterSize: number;
     orbitalSpeed: number;
-  }): { galaxies: number; stars: number } {
+    centralBHMass?: number;
+    centralBHRadius?: number;
+  }): { galaxies: number; stars: number; blackHoles: number } {
     let galaxiesFormed = 0;
     let totalStars = 0;
+    let totalBHs = 0;
     const usedCenters: [number, number, number][] = [];
     const minSeparation2 = (opts.radius * 1.3) * (opts.radius * 1.3);
     const R2 = opts.radius * opts.radius;
@@ -342,6 +345,30 @@ export class Simulator {
         this.spinAroundAxis(newStars, [ax, ay, az], [cx, cy, cz], opts.orbitalSpeed);
       }
 
+      if (opts.centralBHMass && opts.centralBHMass > 0 && newStars.length > 0) {
+        let mx = 0, my = 0, mz = 0, vxm = 0, vym = 0, vzm = 0, totM = 0;
+        for (const s of newStars) {
+          mx += s.x * s.strength;
+          my += s.y * s.strength;
+          mz += s.z * s.strength;
+          vxm += s.vx * s.strength;
+          vym += s.vy * s.strength;
+          vzm += s.vz * s.strength;
+          totM += s.strength;
+        }
+        if (totM > 0) {
+          mx /= totM; my /= totM; mz /= totM;
+          vxm /= totM; vym /= totM; vzm /= totM;
+          const bh = this.addEffector('blackhole', mx, my, mz);
+          bh.strength = opts.centralBHMass;
+          bh.radius = opts.centralBHRadius ?? 0.35;
+          bh.vx = vxm;
+          bh.vy = vym;
+          bh.vz = vzm;
+          totalBHs++;
+        }
+      }
+
       toRemove.sort((a, b) => b - a);
       for (const idx of toRemove) if (idx < this.count) this.removeParticle(idx);
 
@@ -349,7 +376,7 @@ export class Simulator {
       totalStars += newStars.length;
       usedCenters.push([cx, cy, cz]);
     }
-    return { galaxies: galaxiesFormed, stars: totalStars };
+    return { galaxies: galaxiesFormed, stars: totalStars, blackHoles: totalBHs };
   }
 
   private findDensestHSeed(radius: number, excludeCenters: [number, number, number][], minSep2: number): number {

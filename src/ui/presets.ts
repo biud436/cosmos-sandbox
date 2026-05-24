@@ -95,9 +95,9 @@ export const PRESETS: Preset[] = [
         },
       },
       {
-        time: 25.0,
+        time: 18.0,
         name: 'Galaxy Assembly',
-        description: '여러 은하가 형성되어 각자의 축으로 회전하기 시작합니다.',
+        description: '여러 은하가 형성되며, 각 은하 중심에 SMBH 씨앗이 생깁니다.',
         action: (sim) => {
           sim.seedGalaxies({
             galaxyCount: 8,
@@ -105,11 +105,13 @@ export const PRESETS: Preset[] = [
             radius: 3.5,
             starClusterSize: 4,
             orbitalSpeed: 0.7,
+            centralBHMass: 35,
+            centralBHRadius: 0.32,
           });
         },
       },
       {
-        time: 35.0,
+        time: 28.0,
         name: 'Stellar Baby Boom',
         description: '남은 가스가 응집해 별이 폭발적으로 더 탄생합니다.',
         action: (sim) => {
@@ -117,18 +119,23 @@ export const PRESETS: Preset[] = [
         },
       },
       {
-        time: 45.0,
-        name: 'Central Black Hole',
-        description: '가장 큰 은하 중심에서 거대한 별이 붕괴해 초대질량 BH의 씨앗이 됩니다.',
+        time: 40.0,
+        name: 'Supermassive Growth',
+        description: '가장 큰 은하의 중심 BH가 별과 가스를 빨아들이며 급성장합니다.',
         action: (sim) => {
-          let sumX = 0, sumY = 0, sumZ = 0, totM = 0;
+          let biggest: { x: number; y: number; z: number; mass: number } | null = null;
           for (const e of sim.effectors) {
-            if (e.type === 'star') { sumX += e.x * e.strength; sumY += e.y * e.strength; sumZ += e.z * e.strength; totM += e.strength; }
+            if (e.type !== 'blackhole') continue;
+            if (!biggest || e.strength > biggest.mass) biggest = { x: e.x, y: e.y, z: e.z, mass: e.strength };
           }
-          if (totM > 0) {
-            const bh = sim.addEffector('blackhole', sumX / totM, sumY / totM, sumZ / totM);
-            bh.strength = 60;
-            bh.radius = 0.4;
+          if (biggest) {
+            for (const e of sim.effectors) {
+              if (e.type === 'blackhole' && e.strength === biggest.mass && e.x === biggest.x) {
+                e.strength = Math.min(300, e.strength * 2.4);
+                e.radius = Math.max(0.5, Math.cbrt(e.strength) * 0.18);
+                break;
+              }
+            }
           }
         },
       },
