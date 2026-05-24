@@ -134,7 +134,7 @@ export class Simulator {
   supernovaEjectaSpeed = 3.5;
   supernovaEjectaCountFactor = 0.18;
   maxParticleSpeed = 10;
-  maxEffectorSpeed = 6;
+  maxEffectorSpeed = 18;
 
   cosmicEvents: CosmicEvent[] = [];
   firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
@@ -430,13 +430,32 @@ export class Simulator {
           s.vz = cvz + tz * k;
         }
       } else if (newStars.length >= 2) {
-        // No central BH: stars orbit cluster COM with stellar mass providing the central potential.
-        // Use 65% of total stellar mass as effective central mass (rough virial approximation
-        // accounting for the fact that mass is distributed, not point-like).
+        // No central BH: stars orbit cluster COM with combined gravity from
+        // DM halo + other stars. Inside a roughly uniform mass distribution
+        // the correct rotation is rigid-body: v(r) = r·Ω, not Keplerian.
         let totalStellarMass = 0;
         for (const s of newStars) totalStellarMass += s.strength;
-        const M = totalStellarMass * 0.65;
+
+        const dmId = this.dmSpeciesId;
+        let dmMass = 0;
+        if (dmId >= 0) {
+          const r2gal = opts.radius * opts.radius;
+          const dmMassPer = SPECIES[dmId].mass;
+          for (let j = 0; j < this.count; j++) {
+            if (this.species[j] !== dmId) continue;
+            const ddx = this.positions[j * 3 + 0] - cx;
+            const ddy = this.positions[j * 3 + 1] - cy;
+            const ddz = this.positions[j * 3 + 2] - cz;
+            if (ddx * ddx + ddy * ddy + ddz * ddz < r2gal) dmMass += dmMassPer;
+          }
+        }
+
         const Gpair = this.effectorPairG * this.starStarGMul;
+        const Gsg = this.selfGravity;
+        const combinedGM = Gsg * dmMass + Gpair * totalStellarMass;
+        const R = opts.radius;
+        const omega = Math.sqrt(Math.max(0, combinedGM / (R * R * R)));
+
         for (const s of newStars) {
           const rx = s.x - cx;
           const ry = s.y - cy;
@@ -448,8 +467,8 @@ export class Simulator {
           const tz = axisX * ry - axisY * rx;
           const tlen = Math.hypot(tx, ty, tz);
           if (tlen < 1e-3) continue;
-          const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
-          const k = vCirc / tlen;
+          const v = r * omega * opts.orbitalSpeed;
+          const k = v / tlen;
           s.vx = cvx + tx * k;
           s.vy = cvy + ty * k;
           s.vz = cvz + tz * k;
@@ -927,6 +946,22 @@ export class Simulator {
         ax[j] -= fb * dx;
         ay[j] -= fb * dy;
         az[j] -= fb * dz;
+      }
+    }
+
+    // Effectors also feel the smooth gravitational field of particles (DM/gas)
+    // via the BarnesHut tree built in applySelfGravity. Without this stars
+    // don't feel DM halos and never settle into stable galactic orbits.
+    if (this.selfGravity !== 0 && this.count > 0) {
+      const Gself = this.selfGravity;
+      const accel: [number, number, number] = [0, 0, 0];
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (!this.isMassive(e)) continue;
+        this.bh.computeAcceleration(e.x, e.y, e.z, -1, Gself, accel);
+        ax[i] += accel[0];
+        ay[i] += accel[1];
+        az[i] += accel[2];
       }
     }
 
