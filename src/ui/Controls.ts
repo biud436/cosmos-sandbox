@@ -190,6 +190,7 @@ export class Controls {
     if (preset.starFormationCooldown !== undefined) this.sim.starFormationCooldown = preset.starFormationCooldown;
     this.sim.initialBoundingRadius = preset.initialBoundingRadius ?? 0.9;
     this.sim.cosmicEvents = preset.cosmicEvents ?? [];
+    this.sim.initialVelocityScale = preset.initialVelocityScale ?? 1.0;
     this.scene.setRenderMode(preset.renderMode);
     this.scene.setEnvironmentVisible(preset.showEnvironment && !this.sim.openBoundary);
 

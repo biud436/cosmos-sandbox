@@ -34,6 +34,8 @@ export class Layout {
   private hierRows = new Map<string, { dot: HTMLElement; name: HTMLElement; count: HTMLElement; row: HTMLElement }>();
   private starBody = document.getElementById('star-body')!;
   private starRows = new Map<Effector, HTMLElement>();
+  private historyBody = document.getElementById('history-body')!;
+  private renderedHistoryCount = 0;
   private banner = document.getElementById('event-banner')!;
   private bannerTimer: number | null = null;
   private yearsPerUnit = 10;
@@ -149,6 +151,7 @@ export class Layout {
     const stats = sim.stats();
     this.updateHierarchy(sim.getMoleculeBreakdown());
     this.updateStarCatalog(sim.effectors);
+    this.updateHistory(sim.firedEvents);
 
     this.hudFps.textContent = fps.toFixed(0);
     this.hudN.textContent = String(stats.count);
@@ -173,6 +176,23 @@ export class Layout {
 
   setDropHighlight(active: boolean): void {
     this.viewport.classList.toggle('drop-target', active);
+  }
+
+  private updateHistory(fired: { event: CosmicEvent; firedAt: number }[]): void {
+    if (fired.length < this.renderedHistoryCount) {
+      this.historyBody.innerHTML = '';
+      this.renderedHistoryCount = 0;
+    }
+    for (let i = this.renderedHistoryCount; i < fired.length; i++) {
+      const { event, firedAt } = fired[i];
+      const row = document.createElement('div');
+      row.className = 'hist-row';
+      const years = firedAt * this.yearsPerUnit;
+      const yearStr = formatCosmicTime(years);
+      row.innerHTML = `<div class="hist-time">t = ${yearStr}</div><div class="hist-name">◆ ${event.name}</div><div class="hist-desc">${event.description}</div>`;
+      this.historyBody.appendChild(row);
+    }
+    this.renderedHistoryCount = fired.length;
   }
 
   showEvent(ev: CosmicEvent): void {

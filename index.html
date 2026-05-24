@@ -189,6 +189,15 @@
       #star-body .star-name { color: var(--text); font-size: 11px; font-family: ui-monospace, monospace; }
       #star-body .star-mass { color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
 
+      #history-body .hist-row {
+        padding: 5px 6px; border-left: 2px solid #ffc870;
+        margin-bottom: 4px; background: rgba(255, 200, 110, 0.04);
+        border-radius: 0 4px 4px 0;
+      }
+      #history-body .hist-time { color: #ffc870; font-size: 10px; font-variant-numeric: tabular-nums; }
+      #history-body .hist-name { color: var(--text); font-size: 11px; font-weight: 600; margin-top: 1px; }
+      #history-body .hist-desc { color: var(--text-dim); font-size: 10px; margin-top: 2px; line-height: 1.4; }
+
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
       ::-webkit-scrollbar-track { background: transparent; }
@@ -228,7 +237,9 @@
         <div class="panel-header">Hierarchy</div>
         <div class="panel-body" id="hier-body"></div>
         <div class="panel-header">★ Stars · Compact Objects</div>
-        <div class="panel-body" id="star-body" style="max-height: 220px"></div>
+        <div class="panel-body" id="star-body" style="max-height: 180px"></div>
+        <div class="panel-header">📜 우주 연대기</div>
+        <div class="panel-body" id="history-body" style="max-height: 200px"></div>
       </div>
 
       <div id="center" class="panel">

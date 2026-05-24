@@ -540,6 +540,26 @@ export class Scene {
     this.selectedEffector = eff;
   }
 
+  focusOn(position: [number, number, number], distance = 6): void {
+    const target = new THREE.Vector3(position[0], position[1], position[2]);
+    const startTarget = this.controls.target.clone();
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const len = offset.length();
+    if (len > 0.1) offset.multiplyScalar(distance / len);
+    const startCam = this.camera.position.clone();
+    const endCam = target.clone().add(offset);
+    const t0 = performance.now();
+    const dur = 650;
+    const animate = () => {
+      const t = Math.min(1, (performance.now() - t0) / dur);
+      const k = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      this.controls.target.lerpVectors(startTarget, target, k);
+      this.camera.position.lerpVectors(startCam, endCam, k);
+      if (t < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  }
+
   worldFromScreen(clientX: number, clientY: number): [number, number, number] | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {

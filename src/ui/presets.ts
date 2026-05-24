@@ -21,6 +21,7 @@ export interface Preset {
   starFormationCooldown?: number;
   initialBoundingRadius?: number;
   cosmicEvents?: CosmicEvent[];
+  initialVelocityScale?: number;
   distribution: Record<string, number>;
   renderMode: 'solid' | 'gas';
   showEnvironment: boolean;
@@ -46,20 +47,24 @@ export const PRESETS: Preset[] = [
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
     initialClumpCount: 5,
-    initialBoundingRadius: 0.12,
+    initialBoundingRadius: 0.30,
+    initialVelocityScale: 0.15,
     hubbleRate: 0.12,
     hubbleDecay: 0.4,
     openBoundary: true,
-    starFormationEnabled: true,
-    starFormationRadius: 1.4,
-    starFormationCount: 8,
+    starFormationEnabled: false,
+    starFormationRadius: 2.2,
+    starFormationCount: 5,
     starFormationCooldown: 0.2,
     cosmicEvents: [
       {
         time: 0.5,
         name: 'Inflation Ends',
         description: '인플레이션 종료. 팽창이 급격히 감속합니다.',
-        action: (sim) => { sim.hubbleDecay = Math.max(sim.hubbleDecay, 1.2); },
+        action: (sim) => {
+          sim.hubbleDecay = Math.max(sim.hubbleDecay, 1.5);
+          sim.coolAllParticles(0.6);
+        },
       },
       {
         time: 2.0,
@@ -71,20 +76,26 @@ export const PRESETS: Preset[] = [
         time: 5.0,
         name: 'Recombination · CMB',
         description: '원자 형성, 우주배경복사 방출. 우주가 투명해집니다.',
-        action: (sim) => { sim.targetTemperatureK = Math.min(sim.targetTemperatureK, 8); },
+        action: (sim) => {
+          sim.targetTemperatureK = Math.min(sim.targetTemperatureK, 5);
+          sim.coolAllParticles(0.4);
+        },
       },
       {
         time: 12.0,
         name: 'First Stars · Population III',
         description: '암흑 시대의 끝. 최초의 별이 탄생합니다.',
-        action: (sim) => { sim.forceFormStars(4, 2.0, 5); },
+        action: (sim) => {
+          sim.starFormationEnabled = true;
+          sim.forceFormStars(5, 3.0, 3);
+        },
       },
       {
         time: 25.0,
         name: 'Galaxy Assembly',
         description: '별 다발이 자라 원시 은하를 이룹니다.',
         action: (sim) => {
-          sim.forceFormStars(6, 2.5, 4);
+          sim.forceFormStars(7, 3.5, 3);
           let sumX = 0, sumY = 0, sumZ = 0, count = 0;
           for (const e of sim.effectors) {
             if (e.type === 'star') { sumX += e.x; sumY += e.y; sumZ += e.z; count++; }

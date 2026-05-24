@@ -85,6 +85,7 @@ export class Simulator {
   initialClumpCount = 6;
   initialClumpSpread = 0.18;
   initialBoundingRadius = 0.9;
+  initialVelocityScale = 1.0;
   fusionEnabled = false;
   fusionThresholdReduced = 30;
   fusionEnergyRelease = 8;
@@ -120,6 +121,7 @@ export class Simulator {
   onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
 
   cosmicEvents: CosmicEvent[] = [];
+  firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
   private firedEventCount = 0;
   private starCounter = 0;
   private bhCounter = 0;
@@ -204,6 +206,7 @@ export class Simulator {
     this.starFormationTimer = 0;
     this.scaleFactor = 1.0;
     this.firedEventCount = 0;
+    this.firedEvents = [];
     this.starCounter = 0;
     this.bhCounter = 0;
     const half = this.boxHalf * this.initialBoundingRadius;
@@ -254,10 +257,14 @@ export class Simulator {
       this.positions[i * 3 + 2] = (Math.random() * 2 - 1) * half;
     }
 
-    const sigma = Math.sqrt((K_BOLTZMANN_REDUCED * targetTReduced) / Math.max(species.mass, 1e-6));
+    const sigma = Math.sqrt((K_BOLTZMANN_REDUCED * targetTReduced) / Math.max(species.mass, 1e-6)) * this.initialVelocityScale;
     this.velocities[i * 3 + 0] = gaussian() * sigma;
     this.velocities[i * 3 + 1] = gaussian() * sigma;
     this.velocities[i * 3 + 2] = gaussian() * sigma;
+  }
+
+  coolAllParticles(factor: number): void {
+    for (let i = 0; i < this.count * 3; i++) this.velocities[i] *= factor;
   }
 
   private removeCenterOfMassMotion(): void {
@@ -328,6 +335,7 @@ export class Simulator {
       const ev = this.cosmicEvents[this.firedEventCount];
       if (ev.time > this.simTime) break;
       ev.action(this);
+      this.firedEvents.push({ event: ev, firedAt: this.simTime });
       this.onCosmicEvent?.(ev);
       this.firedEventCount++;
     }
@@ -431,8 +439,16 @@ export class Simulator {
   }
 
   forceFormStars(maxStars: number, radius: number, minClusterSize: number): number {
+    let formed = this.scanAndFormStars(maxStars, radius, minClusterSize);
+    if (formed > 0) return formed;
+    formed = this.scanAndFormStars(maxStars, radius * 1.6, Math.max(3, Math.floor(minClusterSize / 2)));
+    if (formed > 0) return formed;
+    return this.fallbackFormStars(maxStars);
+  }
+
+  private scanAndFormStars(maxStars: number, radius: number, minClusterSize: number): number {
     const r2 = radius * radius;
-    const candidates: { center: number; members: number[] }[] = [];
+    const candidates: { members: number[] }[] = [];
     for (let i = 0; i < this.count; i++) {
       if (this.species[i] !== 0) continue;
       const members: number[] = [i];
@@ -446,8 +462,31 @@ export class Simulator {
         const dz = this.positions[j * 3 + 2] - zi;
         if (dx * dx + dy * dy + dz * dz < r2) members.push(j);
       }
-      if (members.length >= minClusterSize) candidates.push({ center: i, members });
+      if (members.length >= minClusterSize) candidates.push({ members });
     }
+    return this.consumeClustersIntoStars(candidates, maxStars);
+  }
+
+  private fallbackFormStars(maxStars: number): number {
+    const hIndices: number[] = [];
+    for (let i = 0; i < this.count; i++) if (this.species[i] === 0) hIndices.push(i);
+    if (hIndices.length < 2) return 0;
+    for (let i = hIndices.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const tmp = hIndices[i]; hIndices[i] = hIndices[j]; hIndices[j] = tmp;
+    }
+    const wanted = Math.min(maxStars, Math.floor(hIndices.length / 4));
+    if (wanted < 1) return 0;
+    const groupSize = Math.max(3, Math.floor(hIndices.length / wanted));
+    const candidates: { members: number[] }[] = [];
+    for (let k = 0; k < wanted; k++) {
+      const members = hIndices.slice(k * groupSize, (k + 1) * groupSize);
+      if (members.length >= 2) candidates.push({ members });
+    }
+    return this.consumeClustersIntoStars(candidates, maxStars);
+  }
+
+  private consumeClustersIntoStars(candidates: { members: number[] }[], maxStars: number): number {
     candidates.sort((a, b) => b.members.length - a.members.length);
     const claimed = new Uint8Array(this.count);
     const removed: number[] = [];

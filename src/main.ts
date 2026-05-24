@@ -35,6 +35,7 @@ sim.onStarFormation = (position, atoms) => {
 sim.onCosmicEvent = (ev) => {
   layout.showEvent(ev);
   layout.log(`◆ ${ev.name} — ${ev.description}`, 'event');
+  layout.updateStats(sim, fps);
 };
 
 const controls = new Controls(
@@ -97,6 +98,7 @@ controls.setDeleteHandler((eff) => {
 
 layout.setEffectorClickHandler((eff) => {
   scene.setSelectedEffector(eff);
+  scene.focusOn([eff.x, eff.y, eff.z]);
   controls.showSelectedEffector(eff);
 });
 
