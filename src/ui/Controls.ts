@@ -72,6 +72,8 @@ export class Controls {
     folder.add(this.sim, 'starFormationRadius', 0.3, 3.0, 0.05).name('SF radius').listen();
     folder.add(this.sim, 'starFormationCount', 4, 80, 1).name('SF threshold').listen();
     folder.add(this.sim, 'starFormationCooldown', 0.05, 2.0, 0.05).name('SF cooldown').listen();
+    folder.add(this.sim, 'starFormationDMMin', 0, 40, 1).name('SF DM 최소').listen();
+    folder.add(this.sim, 'starFormationDMRadius', 0.5, 10, 0.1).name('SF DM 반경').listen();
     folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
   }
 
@@ -210,6 +212,8 @@ export class Controls {
     if (preset.starFormationRadius !== undefined) this.sim.starFormationRadius = preset.starFormationRadius;
     if (preset.starFormationCount !== undefined) this.sim.starFormationCount = preset.starFormationCount;
     if (preset.starFormationCooldown !== undefined) this.sim.starFormationCooldown = preset.starFormationCooldown;
+    this.sim.starFormationDMMin = preset.starFormationDMMin ?? 0;
+    this.sim.starFormationDMRadius = preset.starFormationDMRadius ?? 3.0;
     this.sim.initialBoundingRadius = preset.initialBoundingRadius ?? 0.9;
     this.sim.cosmicEvents = preset.cosmicEvents ?? [];
     this.sim.initialVelocityScale = preset.initialVelocityScale ?? 1.0;

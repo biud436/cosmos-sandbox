@@ -101,6 +101,9 @@ export class Simulator {
   starFormationRadius = 1.4;
   starFormationCount = 8;
   starFormationCooldown = 0.2;
+  starFormationDMMin = 0;
+  starFormationDMRadius = 3.0;
+  private readonly dmSpeciesId: number = SPECIES.findIndex((s) => s.name === 'DM');
   private starFormationTimer = 0;
   private starsFormed = 0;
   bondingEnabled = false;
@@ -594,6 +597,20 @@ export class Simulator {
     return this.hubbleRate / (1 + this.hubbleDecay * this.simTime);
   }
 
+  private countDMNear(x: number, y: number, z: number, r2: number): number {
+    const dmId = this.dmSpeciesId;
+    if (dmId < 0) return 0;
+    let cnt = 0;
+    for (let i = 0; i < this.count; i++) {
+      if (this.species[i] !== dmId) continue;
+      const dx = this.positions[i * 3 + 0] - x;
+      const dy = this.positions[i * 3 + 1] - y;
+      const dz = this.positions[i * 3 + 2] - z;
+      if (dx * dx + dy * dy + dz * dz < r2) cnt++;
+    }
+    return cnt;
+  }
+
   private checkStarFormation(): void {
     const R = this.starFormationRadius;
     const R2 = R * R;
@@ -621,11 +638,16 @@ export class Simulator {
     }
     candidateSeeds.sort((a, b) => b.score - a.score);
 
+    const requireDM = this.starFormationDMMin > 0;
+    const dmR2 = this.starFormationDMRadius * this.starFormationDMRadius;
     for (const seed of candidateSeeds) {
       if (claimed[seed.idx]) continue;
       const xi = this.positions[seed.idx * 3 + 0];
       const yi = this.positions[seed.idx * 3 + 1];
       const zi = this.positions[seed.idx * 3 + 2];
+      if (requireDM) {
+        if (this.countDMNear(xi, yi, zi, dmR2) < this.starFormationDMMin) continue;
+      }
       const nearby: { idx: number; d2: number }[] = [];
       for (let j = 0; j < this.count; j++) {
         if (j === seed.idx || claimed[j]) continue;
@@ -722,12 +744,17 @@ export class Simulator {
     const claimed = new Uint8Array(this.count);
     const removed: number[] = [];
     let formed = 0;
+    const requireDM = this.starFormationDMMin > 0;
+    const dmR2 = this.starFormationDMRadius * this.starFormationDMRadius;
     for (const seed of hIndices) {
       if (formed >= maxStars) break;
       if (claimed[seed]) continue;
       const xi = this.positions[seed * 3 + 0];
       const yi = this.positions[seed * 3 + 1];
       const zi = this.positions[seed * 3 + 2];
+      if (requireDM) {
+        if (this.countDMNear(xi, yi, zi, dmR2) < this.starFormationDMMin) continue;
+      }
       const nearby: { idx: number; d2: number }[] = [];
       for (const j of hIndices) {
         if (j === seed || claimed[j]) continue;

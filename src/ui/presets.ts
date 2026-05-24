@@ -20,6 +20,8 @@ export interface Preset {
   starFormationRadius?: number;
   starFormationCount?: number;
   starFormationCooldown?: number;
+  starFormationDMMin?: number;
+  starFormationDMRadius?: number;
   initialBoundingRadius?: number;
   cosmicEvents?: CosmicEvent[];
   initialVelocityScale?: number;
