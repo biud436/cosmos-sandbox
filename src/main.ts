@@ -5,7 +5,7 @@ import { Layout } from './ui/Layout';
 import { PRESETS } from './ui/presets';
 import { Tools } from './ui/Tools';
 
-const BOX_HALF = 12;
+const BOX_HALF = 60;
 const MAX_PARTICLES = 6000;
 const MAX_PER_SPECIES = 2400;
 const CUTOFF = 2.5;

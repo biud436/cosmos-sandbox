@@ -112,7 +112,7 @@ export class Simulator {
   starHeatRate = 0.4;
   repulsorG = 4;
   freezerDamp = 0.92;
-  effectorPairG = 0.6;
+  effectorPairG = 0.35;
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -122,6 +122,8 @@ export class Simulator {
   onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
   onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
   supernovaMassThreshold = 220;
+  maxParticleSpeed = 10;
+  maxEffectorSpeed = 6;
 
   cosmicEvents: CosmicEvent[] = [];
   firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
@@ -336,14 +338,11 @@ export class Simulator {
         }
       }
 
-      if (newStars.length >= 2) {
-        let ax = Math.random() * 2 - 1;
-        let ay = Math.random() * 2 - 1;
-        let az = Math.random() * 2 - 1;
-        const len = Math.hypot(ax, ay, az) || 1;
-        ax /= len; ay /= len; az /= len;
-        this.spinAroundAxis(newStars, [ax, ay, az], [cx, cy, cz], opts.orbitalSpeed);
-      }
+      let axisX = Math.random() * 2 - 1;
+      let axisY = Math.random() * 2 - 1;
+      let axisZ = Math.random() * 2 - 1;
+      const axLen = Math.hypot(axisX, axisY, axisZ) || 1;
+      axisX /= axLen; axisY /= axLen; axisZ /= axLen;
 
       if (opts.centralBHMass && opts.centralBHMass > 0 && newStars.length > 0) {
         let mx = 0, my = 0, mz = 0, vxm = 0, vym = 0, vzm = 0, totM = 0;
@@ -366,7 +365,29 @@ export class Simulator {
           bh.vy = vym;
           bh.vz = vzm;
           totalBHs++;
+
+          const M = opts.centralBHMass;
+          const Gpair = this.effectorPairG;
+          for (const s of newStars) {
+            const rx = s.x - mx;
+            const ry = s.y - my;
+            const rz = s.z - mz;
+            const r = Math.hypot(rx, ry, rz);
+            if (r < 0.3) continue;
+            const tx = axisY * rz - axisZ * ry;
+            const ty = axisZ * rx - axisX * rz;
+            const tz = axisX * ry - axisY * rx;
+            const tlen = Math.hypot(tx, ty, tz);
+            if (tlen < 1e-3) continue;
+            const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
+            const k = vCirc / tlen;
+            s.vx = vxm + tx * k;
+            s.vy = vym + ty * k;
+            s.vz = vzm + tz * k;
+          }
         }
+      } else if (newStars.length >= 2) {
+        this.spinAroundAxis(newStars, [axisX, axisY, axisZ], [cx, cy, cz], opts.orbitalSpeed);
       }
 
       toRemove.sort((a, b) => b - a);
@@ -515,8 +536,10 @@ export class Simulator {
 
     if (!this.openBoundary) this.applyBoundary();
     else this.applyPeriodicBoundary();
+    this.clampParticleSpeeds();
     this.applyThermostat(dt);
     this.integrateEffectors(dt);
+    this.clampEffectorSpeeds();
 
     if (this.hubbleRate > 0) this.applyHubble(dt);
     if (this.openBoundary) this.applyPeriodicBoundary();
@@ -559,6 +582,9 @@ export class Simulator {
       e.x *= factor;
       e.y *= factor;
       e.z *= factor;
+      e.vx *= drag;
+      e.vy *= drag;
+      e.vz *= drag;
     }
   }
 
@@ -792,9 +818,10 @@ export class Simulator {
     vz /= total;
 
     const eff = this.addEffector('star', cx, cy, cz);
-    eff.vx = vx;
-    eff.vy = vy;
-    eff.vz = vz;
+    const inheritDamp = 0.4;
+    eff.vx = vx * inheritDamp;
+    eff.vy = vy * inheritDamp;
+    eff.vz = vz * inheritDamp;
     eff.strength = Math.min(180, total * 25);
     eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
     this.starsFormed++;
@@ -806,7 +833,7 @@ export class Simulator {
     const list = this.effectors;
     if (list.length === 0) return;
     const G = this.effectorPairG;
-    const eps2 = 0.25;
+    const eps2 = 1.5;
 
     const ax = new Float64Array(list.length);
     const ay = new Float64Array(list.length);
@@ -1104,7 +1131,7 @@ export class Simulator {
 
   private applyBlackHole(e: Effector, consume: Set<number>): void {
     const G = this.blackHoleG;
-    const eps2 = 0.05;
+    const eps2 = 0.6;
     const r2horizon = e.radius * e.radius;
     const influence = e.radius * 5;
     const r2influence = influence * influence;
@@ -1466,6 +1493,37 @@ export class Simulator {
           if (this.velocities[idx] < 0) this.velocities[idx] = -this.velocities[idx];
         }
       }
+    }
+  }
+
+  private clampParticleSpeeds(): void {
+    const vmax = this.maxParticleSpeed;
+    if (!Number.isFinite(vmax) || vmax <= 0) return;
+    const vmax2 = vmax * vmax;
+    for (let i = 0; i < this.count; i++) {
+      const vx = this.velocities[i * 3 + 0];
+      const vy = this.velocities[i * 3 + 1];
+      const vz = this.velocities[i * 3 + 2];
+      const v2 = vx * vx + vy * vy + vz * vz;
+      if (v2 <= vmax2) continue;
+      const scale = vmax / Math.sqrt(v2);
+      this.velocities[i * 3 + 0] = vx * scale;
+      this.velocities[i * 3 + 1] = vy * scale;
+      this.velocities[i * 3 + 2] = vz * scale;
+    }
+  }
+
+  private clampEffectorSpeeds(): void {
+    const vmax = this.maxEffectorSpeed;
+    if (!Number.isFinite(vmax) || vmax <= 0) return;
+    const vmax2 = vmax * vmax;
+    for (const e of this.effectors) {
+      const v2 = e.vx * e.vx + e.vy * e.vy + e.vz * e.vz;
+      if (v2 <= vmax2) continue;
+      const scale = vmax / Math.sqrt(v2);
+      e.vx *= scale;
+      e.vy *= scale;
+      e.vz *= scale;
     }
   }
 

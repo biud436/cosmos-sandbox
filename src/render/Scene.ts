@@ -17,8 +17,17 @@ export class Scene {
   private gridMesh: THREE.GridHelper | null = null;
   private universeMesh: THREE.LineSegments | null = null;
   private universeShell: THREE.Mesh | null = null;
-  private universeVisible = true;
+  private bondLines: THREE.LineSegments | null = null;
   private bondGeom: THREE.BufferGeometry | null = null;
+  readonly visibility = {
+    particles: true,
+    bonds: true,
+    boundary: false,
+    stars: true,
+    blackholes: true,
+    repulsors: true,
+    freezers: true,
+  };
   private bondPositions: Float32Array | null = null;
   private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
   private effectorClock = 0;
@@ -172,11 +181,12 @@ export class Scene {
     const edgesMat = new THREE.LineBasicMaterial({
       color: 0x44ddff,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.25,
       depthWrite: false,
     });
     const wire = new THREE.LineSegments(edgesGeo, edgesMat);
     wire.frustumCulled = false;
+    wire.visible = this.visibility.boundary;
     this.scene.add(wire);
     this.universeMesh = wire;
 
@@ -204,25 +214,37 @@ export class Scene {
         uniform vec3 uColor;
         void main() {
           float rim = 1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0);
-          float a = pow(rim, 3.0) * 0.45;
+          float a = pow(rim, 4.0) * 0.18;
           gl_FragColor = vec4(uColor, a);
         }
       `,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     shell.frustumCulled = false;
+    shell.visible = this.visibility.boundary;
     this.scene.add(shell);
     this.universeShell = shell;
   }
 
-  setUniverseBoundaryVisible(visible: boolean): void {
-    this.universeVisible = visible;
-    if (this.universeMesh) this.universeMesh.visible = visible;
-    if (this.universeShell) this.universeShell.visible = visible;
+  setVisibility(group: keyof Scene['visibility'], visible: boolean): void {
+    this.visibility[group] = visible;
+    switch (group) {
+      case 'particles':
+        for (const m of this.speciesMeshes) m.visible = visible && this.renderMode === 'solid';
+        if (this.gasPoints) this.gasPoints.visible = visible && this.renderMode === 'gas';
+        break;
+      case 'bonds':
+        if (this.bondLines) this.bondLines.visible = visible;
+        break;
+      case 'boundary':
+        if (this.universeMesh) this.universeMesh.visible = visible;
+        if (this.universeShell) this.universeShell.visible = visible;
+        break;
+    }
   }
 
-  isUniverseBoundaryVisible(): boolean {
-    return this.universeVisible;
+  isVisible(group: keyof Scene['visibility']): boolean {
+    return this.visibility[group];
   }
 
   private buildEnvironment(): void {
@@ -337,6 +359,7 @@ export class Scene {
     lines.frustumCulled = false;
     this.scene.add(lines);
     this.bondGeom = geom;
+    this.bondLines = lines;
     this.bondPositions = positions;
   }
 
@@ -344,8 +367,9 @@ export class Scene {
     if (mode === this.renderMode) return;
     this.renderMode = mode;
     const useSolid = mode === 'solid';
-    for (const m of this.speciesMeshes) m.visible = useSolid;
-    if (this.gasPoints) this.gasPoints.visible = !useSolid;
+    const show = this.visibility.particles;
+    for (const m of this.speciesMeshes) m.visible = show && useSolid;
+    if (this.gasPoints) this.gasPoints.visible = show && !useSolid;
   }
 
   setEnvironmentVisible(visible: boolean): void {
@@ -367,21 +391,33 @@ export class Scene {
     }
   }
 
+  private readonly tmpFrustum = new THREE.Frustum();
+  private readonly tmpProjView = new THREE.Matrix4();
+  private readonly tmpSphere = new THREE.Sphere();
+
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
     this.setUniverseScale(sim.scaleFactor);
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
+
+    this.camera.updateMatrixWorld();
+    this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    this.tmpFrustum.setFromProjectionMatrix(this.tmpProjView);
+
     if (this.renderMode === 'solid') {
       const counts = new Int32Array(SPECIES.length);
       for (let i = 0; i < n; i++) {
         const s = sim.species[i];
-        const slot = counts[s]++;
-        if (slot >= this.speciesCapacity[s]) continue;
         const px = sim.positions[i * 3 + 0];
         const py = sim.positions[i * 3 + 1];
         const pz = sim.positions[i * 3 + 2];
         const radius = SPECIES[s].sigma * 1.1;
+        this.tmpSphere.center.set(px, py, pz);
+        this.tmpSphere.radius = radius;
+        if (!this.tmpFrustum.intersectsSphere(this.tmpSphere)) continue;
+        const slot = counts[s]++;
+        if (slot >= this.speciesCapacity[s]) continue;
         this.tmpMat.makeScale(radius, radius, radius);
         this.tmpMat.setPosition(px, py, pz);
         this.speciesMeshes[s].setMatrixAt(slot, this.tmpMat);
@@ -391,24 +427,32 @@ export class Scene {
         this.speciesMeshes[s].instanceMatrix.needsUpdate = true;
       }
     } else if (this.gasGeom && this.gasPositions && this.gasColors && this.gasSizes) {
+      let write = 0;
       const cap = Math.min(n, this.maxParticlesTotal);
       for (let i = 0; i < cap; i++) {
         const s = sim.species[i];
         const sp = SPECIES[s];
+        const px = sim.positions[i * 3 + 0];
+        const py = sim.positions[i * 3 + 1];
+        const pz = sim.positions[i * 3 + 2];
+        this.tmpSphere.center.set(px, py, pz);
+        this.tmpSphere.radius = sp.sigma * 1.5;
+        if (!this.tmpFrustum.intersectsSphere(this.tmpSphere)) continue;
         const isDM = sp.name === 'DM';
-        this.gasPositions[i * 3 + 0] = sim.positions[i * 3 + 0];
-        this.gasPositions[i * 3 + 1] = sim.positions[i * 3 + 1];
-        this.gasPositions[i * 3 + 2] = sim.positions[i * 3 + 2];
+        this.gasPositions[write * 3 + 0] = px;
+        this.gasPositions[write * 3 + 1] = py;
+        this.gasPositions[write * 3 + 2] = pz;
         const r = ((sp.color >> 16) & 0xff) / 255;
         const g = ((sp.color >> 8) & 0xff) / 255;
         const b = (sp.color & 0xff) / 255;
         const dim = isDM ? 0.35 : 1.0;
-        this.gasColors[i * 3 + 0] = r * dim;
-        this.gasColors[i * 3 + 1] = g * dim;
-        this.gasColors[i * 3 + 2] = b * dim;
-        this.gasSizes[i] = sp.sigma * (isDM ? 5.0 : 4.5);
+        this.gasColors[write * 3 + 0] = r * dim;
+        this.gasColors[write * 3 + 1] = g * dim;
+        this.gasColors[write * 3 + 2] = b * dim;
+        this.gasSizes[write] = sp.sigma * (isDM ? 5.0 : 4.5);
+        write++;
       }
-      this.gasGeom.setDrawRange(0, cap);
+      this.gasGeom.setDrawRange(0, write);
       (this.gasGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
       (this.gasGeom.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
       (this.gasGeom.getAttribute('size') as THREE.BufferAttribute).needsUpdate = true;
@@ -435,6 +479,15 @@ export class Scene {
     (this.bondGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
+  private visibilityKeyFor(type: EffectorType): keyof Scene['visibility'] {
+    switch (type) {
+      case 'star': return 'stars';
+      case 'blackhole': return 'blackholes';
+      case 'repulsor': return 'repulsors';
+      case 'freezer': return 'freezers';
+    }
+  }
+
   private syncEffectors(sim: Simulator, frameDt: number): void {
     this.effectorClock += frameDt;
     const alive = new Set(sim.effectors);
@@ -450,8 +503,12 @@ export class Scene {
         view = this.createEffectorView(eff.type);
         this.effectorViews.set(eff, view);
       }
+      const typeVisible = this.visibility[this.visibilityKeyFor(eff.type)];
+      view.group.visible = typeVisible;
+      if (!typeVisible) continue;
       view.group.position.set(eff.x, eff.y, eff.z);
-      view.group.scale.setScalar(eff.radius);
+      const scaleBoost = eff.type === 'star' ? 1.8 : eff.type === 'blackhole' ? 1.3 : 1.0;
+      view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;
       const selected = eff === this.selectedEffector;
@@ -505,10 +562,13 @@ export class Scene {
             float r = length(c);
             if (r > 1.0) discard;
             float a = atan(c.y, c.x);
-            float rays = abs(sin(a * 8.0 + uTime * 0.5)) * 0.4 + 0.6;
-            float glow = exp(-r * 2.5) * rays;
-            vec3 col = mix(vec3(1.0, 0.5, 0.1), vec3(1.0, 0.95, 0.7), glow);
-            gl_FragColor = vec4(col * glow * 1.5, glow);
+            float rays = abs(sin(a * 6.0 + uTime * 0.4)) * 0.55 + 0.45;
+            float core = exp(-r * 3.5);
+            float halo = exp(-r * 1.2) * 0.55;
+            float spike = pow(max(1.0 - abs(c.x), 0.0), 28.0) + pow(max(1.0 - abs(c.y), 0.0), 28.0);
+            float glow = core + halo * rays + spike * 0.45;
+            vec3 col = mix(vec3(1.0, 0.55, 0.15), vec3(1.0, 0.97, 0.78), core);
+            gl_FragColor = vec4(col * (1.0 + glow * 1.5), clamp(glow, 0.0, 1.0));
           }
         `;
         break;

@@ -59,6 +59,7 @@ export class Controls {
     this.buildBondingFolder();
     this.buildFusionFolder();
     this.buildCosmologyFolder();
+    this.buildVisibilityFolder();
     this.applyPreset(PRESETS[0]);
   }
 
@@ -72,11 +73,26 @@ export class Controls {
     folder.add(this.sim, 'starFormationCount', 4, 80, 1).name('SF threshold').listen();
     folder.add(this.sim, 'starFormationCooldown', 0.05, 2.0, 0.05).name('SF cooldown').listen();
     folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
-    const boundaryProxy = { visible: this.scene.isUniverseBoundaryVisible() };
-    folder
-      .add(boundaryProxy, 'visible')
-      .name('우주 경계 표시')
-      .onChange((v: boolean) => this.scene.setUniverseBoundaryVisible(v));
+  }
+
+  private buildVisibilityFolder(): void {
+    const folder = this.gui.addFolder('시야 (Visibility)');
+    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers'; label: string }[] = [
+      { key: 'particles', label: '입자' },
+      { key: 'bonds', label: '결합' },
+      { key: 'stars', label: '별' },
+      { key: 'blackholes', label: '블랙홀' },
+      { key: 'repulsors', label: '반발자' },
+      { key: 'freezers', label: '동결자' },
+      { key: 'boundary', label: '우주 경계' },
+    ];
+    for (const g of groups) {
+      const proxy = { v: this.scene.isVisible(g.key) };
+      folder
+        .add(proxy, 'v')
+        .name(g.label)
+        .onChange((val: boolean) => this.scene.setVisibility(g.key, val));
+    }
   }
 
   private buildBondingFolder(): void {
