@@ -38,6 +38,16 @@ export class Scene {
   private selectedOrbitLinkGeom: THREE.BufferGeometry | null = null;
   private selectedOrbitLinkPositions: Float32Array | null = null;
   private orbitSegments = 96;
+  private trailLines: THREE.Line | null = null;
+  private trailGeom: THREE.BufferGeometry | null = null;
+  private trailPositions: Float32Array | null = null;
+  private trailColors: Float32Array | null = null;
+  private trailCapacity = 512;
+  private trailWriteIdx = 0;
+  private trailCount = 0;
+  private trailLastEffector: Effector | null = null;
+  private trailSampleAccum = 0;
+  private trailSampleInterval = 1 / 60; // record at ~60Hz max
   private bondPositions: Float32Array | null = null;
   private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
   private effectorClock = 0;
@@ -254,6 +264,7 @@ export class Scene {
       case 'orbits':
         if (this.selectedOrbitLines) this.selectedOrbitLines.visible = visible;
         if (this.selectedOrbitLink) this.selectedOrbitLink.visible = visible;
+        if (this.trailLines) this.trailLines.visible = visible;
         break;
       case 'galaxies':
         for (const { mesh } of this.galaxyHalos.values()) mesh.visible = visible;
@@ -382,16 +393,38 @@ export class Scene {
   }
 
   private buildOrbitRenderer(): void {
-    const verticesPerOrbit = this.orbitSegments * 2;
+    // Trail: actual path the selected effector has traveled, with vertex-color fade
+    const trailCap = this.trailCapacity;
+    const tPositions = new Float32Array(trailCap * 3);
+    const tColors = new Float32Array(trailCap * 3);
+    const trailGeom = new THREE.BufferGeometry();
+    trailGeom.setAttribute('position', new THREE.BufferAttribute(tPositions, 3));
+    trailGeom.setAttribute('color', new THREE.BufferAttribute(tColors, 3));
+    trailGeom.setDrawRange(0, 0);
+    const trailMat = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    });
+    const trail = new THREE.Line(trailGeom, trailMat);
+    trail.frustumCulled = false;
+    trail.visible = this.visibility.orbits;
+    this.scene.add(trail);
+    this.trailLines = trail;
+    this.trailGeom = trailGeom;
+    this.trailPositions = tPositions;
+    this.trailColors = tColors;
 
+    const verticesPerOrbit = this.orbitSegments * 2;
     const selPositions = new Float32Array(verticesPerOrbit * 3);
     const selGeom = new THREE.BufferGeometry();
     selGeom.setAttribute('position', new THREE.BufferAttribute(selPositions, 3));
     selGeom.setDrawRange(0, 0);
     const selMat = new THREE.LineBasicMaterial({
-      color: 0xffd66a,
+      color: 0x6688aa,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.35,
       depthWrite: false,
     });
     const selLines = new THREE.LineSegments(selGeom, selMat);
@@ -467,6 +500,7 @@ export class Scene {
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
     this.syncOrbits(sim);
+    this.recordTrail(frameDt);
     this.syncGalaxies(sim);
 
     if (this.renderMode === 'solid') {
@@ -551,6 +585,81 @@ export class Scene {
       case 'freezer': return 'freezers';
     }
   }
+
+  private recordTrail(dt: number): void {
+    if (!this.trailGeom || !this.trailPositions || !this.trailColors || !this.trailLines) return;
+    const sel = this.selectedEffector;
+    if (!this.visibility.orbits || !sel) {
+      this.trailGeom.setDrawRange(0, 0);
+      this.trailLastEffector = null;
+      this.trailCount = 0;
+      this.trailWriteIdx = 0;
+      return;
+    }
+    if (sel !== this.trailLastEffector) {
+      this.trailCount = 0;
+      this.trailWriteIdx = 0;
+      this.trailLastEffector = sel;
+      this.trailSampleAccum = 0;
+    }
+    this.trailSampleAccum += dt;
+    if (this.trailSampleAccum < this.trailSampleInterval && this.trailCount > 0) {
+      // still draw existing trail with updated last-segment to current position
+      this.drawTrailBuffer(sel);
+      return;
+    }
+    this.trailSampleAccum = 0;
+    // Push current position into ring buffer
+    const idx = this.trailWriteIdx;
+    this.trailPositions[idx * 3 + 0] = sel.x;
+    this.trailPositions[idx * 3 + 1] = sel.y;
+    this.trailPositions[idx * 3 + 2] = sel.z;
+    this.trailWriteIdx = (idx + 1) % this.trailCapacity;
+    if (this.trailCount < this.trailCapacity) this.trailCount++;
+    this.drawTrailBuffer(sel);
+  }
+
+  private drawTrailBuffer(sel: Effector): void {
+    if (!this.trailGeom || !this.trailPositions || !this.trailColors) return;
+    const cap = this.trailCapacity;
+    const count = this.trailCount;
+    // Order from oldest to newest into a linear position attribute
+    // Use a temporary linear buffer in this.trailPositions via re-ordering? Too expensive.
+    // Instead: write linear vertex order directly each frame from the ring.
+    // Three.js Line draws in attribute order, so we need contiguous linear data.
+    // Allocate a transient view — we keep the ring buffer for positions and copy to a contiguous array here.
+    const linear = this._trailLinearScratch ??= new Float32Array(this.trailCapacity * 3);
+    const colors = this.trailColors;
+    const start = (this.trailWriteIdx - count + cap) % cap;
+    for (let i = 0; i < count; i++) {
+      const r = (start + i) % cap;
+      linear[i * 3 + 0] = this.trailPositions[r * 3 + 0];
+      linear[i * 3 + 1] = this.trailPositions[r * 3 + 1];
+      linear[i * 3 + 2] = this.trailPositions[r * 3 + 2];
+      // Fade: oldest dim, newest bright (warm gold)
+      const t = count > 1 ? i / (count - 1) : 1;
+      const a = t * t; // ease-in for tail
+      colors[i * 3 + 0] = 1.0 * a;
+      colors[i * 3 + 1] = 0.84 * a;
+      colors[i * 3 + 2] = 0.42 * a;
+    }
+    // Append current position so the trail reaches the live effector
+    if (count < cap) {
+      linear[count * 3 + 0] = sel.x;
+      linear[count * 3 + 1] = sel.y;
+      linear[count * 3 + 2] = sel.z;
+      colors[count * 3 + 0] = 1.0;
+      colors[count * 3 + 1] = 0.85;
+      colors[count * 3 + 2] = 0.5;
+    }
+    const posAttr = this.trailGeom.getAttribute('position') as THREE.BufferAttribute;
+    (posAttr.array as Float32Array).set(linear);
+    posAttr.needsUpdate = true;
+    (this.trailGeom.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
+    this.trailGeom.setDrawRange(0, Math.min(cap, count + 1));
+  }
+
+  private _trailLinearScratch: Float32Array | null = null;
 
   private syncGalaxies(sim: Simulator): void {
     const stars: Effector[] = [];

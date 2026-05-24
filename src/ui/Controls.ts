@@ -51,22 +51,52 @@ export class Controls {
     private onPresetApplied: (preset: Preset) => void,
   ) {
     this.gui = new GUI({ container, title: 'Parameters' });
+    this.injectFolderStyles();
     this.state.preset = PRESETS[0].name;
     this.state.timeScale = PRESETS[0].initialTimeScale;
     this.distribution = { ...PRESETS[0].distribution };
-    this.buildEnvironmentFolder();
+    // Reset-only folders first (clearly marked at top)
+    this.buildInitialConditionsFolder();
     this.buildDistributionFolder();
+    // Runtime-editable folders below
+    this.buildEnvironmentFolder();
     this.buildBondingFolder();
     this.buildFusionFolder();
     this.buildCosmologyFolder();
-    this.buildInitialConditionsFolder();
     this.buildEffectorPhysicsFolder();
     this.buildVisibilityFolder();
     this.applyPreset(PRESETS[0]);
   }
 
+  private injectFolderStyles(): void {
+    if (document.getElementById('cosmos-gui-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'cosmos-gui-styles';
+    style.textContent = `
+      .lil-gui .folder.cosmos-reset-only > .title {
+        color: #ffaa55 !important;
+        background: rgba(255, 170, 85, 0.10) !important;
+        border-left: 3px solid #ffaa55 !important;
+        padding-left: 6px !important;
+      }
+      .lil-gui .folder.cosmos-runtime > .title {
+        color: #88ddff !important;
+        border-left: 3px solid #88ddff !important;
+        padding-left: 6px !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  private markFolder(folder: GUI, kind: 'reset' | 'runtime'): void {
+    const el = (folder as unknown as { domElement: HTMLElement }).domElement;
+    if (!el) return;
+    el.classList.add(kind === 'reset' ? 'cosmos-reset-only' : 'cosmos-runtime');
+  }
+
   private buildInitialConditionsFolder(): void {
-    const folder = this.gui.addFolder('초기 조건');
+    const folder = this.gui.addFolder('초기 조건 — Reset 후 적용');
+    this.markFolder(folder, 'reset');
     folder
       .add(this.sim, 'initialPattern', ['uniform', 'clumpy'])
       .name('초기 분포 패턴').listen();
@@ -78,7 +108,8 @@ export class Controls {
   }
 
   private buildEffectorPhysicsFolder(): void {
-    const folder = this.gui.addFolder('효과기 물리');
+    const folder = this.gui.addFolder('효과기 물리 — 실시간');
+    this.markFolder(folder, 'runtime');
     folder.add(this.sim, 'effectorPairG', 0, 1.5, 0.01).name('효과기 상호 G').listen();
     folder.add(this.sim, 'starStarGMul', 0, 1.0, 0.01).name('별-별 G 배율').listen();
     folder.add(this.sim, 'starConsumeRadiusMul', 0.1, 1.0, 0.05).name('별 소비 반경 배율').listen();
@@ -100,7 +131,8 @@ export class Controls {
   }
 
   private buildCosmologyFolder(): void {
-    const folder = this.gui.addFolder('우주론');
+    const folder = this.gui.addFolder('우주론 — 실시간');
+    this.markFolder(folder, 'runtime');
     folder.add(this.sim, 'hubbleRate', 0, 0.3, 0.001).name('Hubble H₀').listen();
     folder.add(this.sim, 'hubbleDecay', 0, 2, 0.01).name('Hubble decay α').listen();
     folder.add(this.sim, 'openBoundary').name('Open boundary').listen();
@@ -114,7 +146,8 @@ export class Controls {
   }
 
   private buildVisibilityFolder(): void {
-    const folder = this.gui.addFolder('시야 (Visibility)');
+    const folder = this.gui.addFolder('시야 — 실시간');
+    this.markFolder(folder, 'runtime');
     const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies'; label: string }[] = [
       { key: 'particles', label: '입자' },
       { key: 'bonds', label: '결합' },
@@ -136,7 +169,8 @@ export class Controls {
   }
 
   private buildBondingFolder(): void {
-    const folder = this.gui.addFolder('화학 결합');
+    const folder = this.gui.addFolder('화학 결합 — 실시간');
+    this.markFolder(folder, 'runtime');
     folder
       .add(this.subPresetState, 'bonding', BONDING_PRESETS.map((p) => p.name))
       .name('▾ 빠른 적용')
@@ -157,7 +191,8 @@ export class Controls {
   }
 
   private buildEnvironmentFolder(): void {
-    const folder = this.gui.addFolder('환경');
+    const folder = this.gui.addFolder('환경 — 실시간');
+    this.markFolder(folder, 'runtime');
     folder
       .add(this.subPresetState, 'env', ENV_PRESETS.map((p) => p.name))
       .name('▾ 빠른 적용')
@@ -180,7 +215,8 @@ export class Controls {
   }
 
   private buildDistributionFolder(): void {
-    const folder = this.gui.addFolder('입자 구성');
+    const folder = this.gui.addFolder('입자 구성 — Reset 후 적용');
+    this.markFolder(folder, 'reset');
     folder
       .add(this.subPresetState, 'composition', COMPOSITION_PRESETS.map((p) => p.name))
       .name('▾ 빠른 적용')
@@ -212,7 +248,8 @@ export class Controls {
   }
 
   private buildFusionFolder(): void {
-    const folder = this.gui.addFolder('핵융합 (간이 모델)');
+    const folder = this.gui.addFolder('핵융합 (간이 모델) — 실시간');
+    this.markFolder(folder, 'runtime');
     folder
       .add(this.subPresetState, 'fusion', FUSION_PRESETS.map((p) => p.name))
       .name('▾ 빠른 적용')
