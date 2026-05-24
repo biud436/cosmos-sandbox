@@ -93,14 +93,26 @@ export const PRESETS: Preset[] = [
       {
         time: 25.0,
         name: 'Galaxy Assembly',
-        description: '별 다발이 자라 원시 은하를 이룹니다.',
+        description: '별 다발이 회전하며 원시 은하를 이룹니다.',
         action: (sim) => {
-          sim.forceFormStars(7, 3.5, 3);
-          let sumX = 0, sumY = 0, sumZ = 0, count = 0;
+          sim.forceFormStars(12, 3.8, 3);
+          sim.spinUpRecentStars(0.8, 0.5);
+        },
+      },
+      {
+        time: 45.0,
+        name: 'Central Black Hole',
+        description: '은하 중심에서 거대한 별이 붕괴해 초대질량 BH의 씨앗이 됩니다.',
+        action: (sim) => {
+          let sumX = 0, sumY = 0, sumZ = 0, totM = 0;
           for (const e of sim.effectors) {
-            if (e.type === 'star') { sumX += e.x; sumY += e.y; sumZ += e.z; count++; }
+            if (e.type === 'star') { sumX += e.x * e.strength; sumY += e.y * e.strength; sumZ += e.z * e.strength; totM += e.strength; }
           }
-          if (count > 0) sim.addEffector('blackhole', sumX / count, sumY / count, sumZ / count);
+          if (totM > 0) {
+            const bh = sim.addEffector('blackhole', sumX / totM, sumY / totM, sumZ / totM);
+            bh.strength = 60;
+            bh.radius = 0.4;
+          }
         },
       },
     ],

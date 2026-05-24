@@ -270,6 +270,40 @@ export class Simulator {
     for (let i = 0; i < this.count * 3; i++) this.velocities[i] *= factor;
   }
 
+  spinUpRecentStars(orbitalSpeed: number, withinSimTime: number): number {
+    const cutoff = this.simTime - withinSimTime;
+    const recent: Effector[] = [];
+    for (const e of this.effectors) if (e.type === 'star' && e.bornAt >= cutoff) recent.push(e);
+    if (recent.length < 2) return 0;
+    let cx = 0, cy = 0, cz = 0, totM = 0;
+    for (const s of recent) {
+      cx += s.x * s.strength;
+      cy += s.y * s.strength;
+      cz += s.z * s.strength;
+      totM += s.strength;
+    }
+    if (totM <= 0) return 0;
+    cx /= totM; cy /= totM; cz /= totM;
+    const axisX = 0;
+    const axisY = 1;
+    const axisZ = 0;
+    for (const s of recent) {
+      const rx = s.x - cx;
+      const ry = s.y - cy;
+      const rz = s.z - cz;
+      const tx = axisY * rz - axisZ * ry;
+      const ty = axisZ * rx - axisX * rz;
+      const tz = axisX * ry - axisY * rx;
+      const len = Math.hypot(tx, ty, tz);
+      if (len < 1e-3) continue;
+      const k = orbitalSpeed / len;
+      s.vx += tx * k;
+      s.vy += ty * k;
+      s.vz += tz * k;
+    }
+    return recent.length;
+  }
+
   private removeCenterOfMassMotion(): void {
     let vx = 0;
     let vy = 0;
@@ -702,7 +736,7 @@ export class Simulator {
     bh.vy = (bh.vy * ma + star.vy * dm) / total;
     bh.vz = (bh.vz * ma + star.vz * dm) / total;
     bh.strength = total;
-    bh.radius = Math.min(1.8, Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.15));
+    bh.radius = Math.min(1.0, Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.1));
     bh.consumed += 1;
   }
 
@@ -794,7 +828,7 @@ export class Simulator {
 
   addEffector(type: EffectorType, x: number, y: number, z: number): Effector {
     const presets: Record<EffectorType, { radius: number; strength: number }> = {
-      blackhole: { radius: 0.55, strength: 25 },
+      blackhole: { radius: 0.35, strength: 25 },
       star:      { radius: 1.6, strength: 30 },
       repulsor:  { radius: 1.5, strength: 60 },
       freezer:   { radius: 3.0, strength: 0.92 },
@@ -849,6 +883,10 @@ export class Simulator {
     const G = this.blackHoleG;
     const eps2 = 0.05;
     const r2horizon = e.radius * e.radius;
+    const influence = e.radius * 5;
+    const r2influence = influence * influence;
+    const fadeStart = influence * 0.85;
+    const r2fade = fadeStart * fadeStart;
     for (let i = 0; i < this.count; i++) {
       const dx = e.x - this.positions[i * 3 + 0];
       const dy = e.y - this.positions[i * 3 + 1];
@@ -859,9 +897,15 @@ export class Simulator {
         e.consumed++;
         continue;
       }
+      if (r2 > r2influence) continue;
+      let scale = 1;
+      if (r2 > r2fade) {
+        const r = Math.sqrt(r2);
+        scale = (influence - r) / (influence - fadeStart);
+      }
       const m = SPECIES[this.species[i]].mass;
       const invR = 1 / Math.sqrt(r2 + eps2);
-      const f = G * e.strength * m * invR * invR * invR;
+      const f = G * e.strength * m * invR * invR * invR * scale;
       this.forces[i * 3 + 0] += f * dx;
       this.forces[i * 3 + 1] += f * dy;
       this.forces[i * 3 + 2] += f * dz;
