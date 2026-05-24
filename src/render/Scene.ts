@@ -627,7 +627,7 @@ export class Scene {
       const horizonMesh = new THREE.Mesh(horizonGeo, horizonMat);
       group.add(horizonMesh);
 
-      const infRingGeo = new THREE.RingGeometry(4.8, 5.0, 64);
+      const infRingGeo = new THREE.RingGeometry(2.85, 3.0, 64);
       const infRingMat = new THREE.MeshBasicMaterial({
         color: 0xff8855,
         transparent: true,

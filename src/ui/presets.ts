@@ -40,7 +40,7 @@ export const PRESETS: Preset[] = [
     selfGravity: 1.6,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 1400, He: 220, DM: 1400 },
+    distribution: { H: 2400, He: 360, DM: 1800 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
@@ -55,8 +55,8 @@ export const PRESETS: Preset[] = [
     hubbleDecay: 0.4,
     openBoundary: true,
     starFormationEnabled: false,
-    starFormationRadius: 1.4,
-    starFormationCount: 4,
+    starFormationRadius: 2.5,
+    starFormationCount: 3,
     starFormationCooldown: 0.15,
     cosmicEvents: [
       {
@@ -89,9 +89,9 @@ export const PRESETS: Preset[] = [
         description: '암흑 시대의 끝. 가스가 응집되어 최초의 별이 일제히 탄생합니다.',
         action: (sim) => {
           sim.starFormationEnabled = true;
-          sim.starFormationRadius = 1.4;
-          sim.starFormationCount = 4;
-          sim.forceFormStars(60, 2.0, 4);
+          sim.starFormationRadius = 2.5;
+          sim.starFormationCount = 3;
+          sim.forceFormStars(60, 2.5, 4);
         },
       },
       {

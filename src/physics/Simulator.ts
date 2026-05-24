@@ -107,12 +107,12 @@ export class Simulator {
   bondStiffness = 80;
   bondFormFactor = 1.2;
   bondBreakFactor = 3.0;
-  blackHoleG = 1.6;
+  blackHoleG = 0.9;
   starG = 2;
   starHeatRate = 0.4;
   repulsorG = 4;
   freezerDamp = 0.92;
-  effectorPairG = 0.35;
+  effectorPairG = 0.25;
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -1133,7 +1133,7 @@ export class Simulator {
     const G = this.blackHoleG;
     const eps2 = 0.6;
     const r2horizon = e.radius * e.radius;
-    const influence = e.radius * 5;
+    const influence = e.radius * 3;
     const r2influence = influence * influence;
     const fadeStart = influence * 0.85;
     const r2fade = fadeStart * fadeStart;
