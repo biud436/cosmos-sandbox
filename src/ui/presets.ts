@@ -120,27 +120,6 @@ export const PRESETS: Preset[] = [
           sim.forceFormStars(120, 2.0, 4);
         },
       },
-      {
-        time: 28.0,
-        name: 'Supermassive Growth',
-        description: '가장 큰 은하의 중심 BH가 별과 가스를 빨아들이며 급성장합니다.',
-        action: (sim) => {
-          let biggest: { x: number; y: number; z: number; mass: number } | null = null;
-          for (const e of sim.effectors) {
-            if (e.type !== 'blackhole') continue;
-            if (!biggest || e.strength > biggest.mass) biggest = { x: e.x, y: e.y, z: e.z, mass: e.strength };
-          }
-          if (biggest) {
-            for (const e of sim.effectors) {
-              if (e.type === 'blackhole' && e.strength === biggest.mass && e.x === biggest.x) {
-                e.strength = Math.min(300, e.strength * 2.4);
-                e.radius = Math.max(0.5, Math.cbrt(e.strength) * 0.18);
-                break;
-              }
-            }
-          }
-        },
-      },
     ],
   },
   {
