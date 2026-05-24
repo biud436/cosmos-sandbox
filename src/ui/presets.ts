@@ -99,16 +99,14 @@ export const PRESETS: Preset[] = [
       {
         time: 10.0,
         name: 'Galaxy Assembly',
-        description: '여러 은하가 형성되며, 각 은하 중심에 SMBH 씨앗이 생깁니다.',
+        description: '여러 별 무리가 회전하며 원시 은하가 형성됩니다. (블랙홀은 자연 형성에 맡김)',
         action: (sim) => {
           sim.seedGalaxies({
             galaxyCount: 14,
             starsPerGalaxy: 24,
             radius: 7.0,
             starClusterSize: 4,
-            orbitalSpeed: 1.05,
-            centralBHMass: 28,
-            centralBHRadius: 1.5,
+            orbitalSpeed: 0.5,
           });
         },
       },
