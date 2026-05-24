@@ -1,0 +1,196 @@
+import GUI from 'lil-gui';
+import { Simulator } from '../physics/Simulator';
+import { SPECIES } from '../physics/types';
+import { Scene } from '../render/Scene';
+import { Preset, PRESETS } from './presets';
+import {
+  BONDING_PRESETS,
+  BondingPreset,
+  COMPOSITION_PRESETS,
+  CompositionPreset,
+  ENV_PRESETS,
+  EnvPreset,
+  FUSION_PRESETS,
+  FusionPreset,
+} from './subPresets';
+
+export interface ControlsState {
+  paused: boolean;
+  timeScale: number;
+  preset: string;
+}
+
+export const INTERNAL_DT = 0.005;
+export const BASE_SUBSTEPS_PER_FRAME = 1;
+
+export class Controls {
+  readonly state: ControlsState = {
+    paused: false,
+    timeScale: 1,
+    preset: PRESETS[0].name,
+  };
+
+  private gui: GUI;
+  private distributionControllers: Record<string, { setValue: (v: number) => void }> = {};
+  private distribution: Record<string, number> = {};
+  private suppressApply = false;
+  private subPresetState = {
+    env: ENV_PRESETS[0].name,
+    composition: COMPOSITION_PRESETS[0].name,
+    bonding: BONDING_PRESETS[0].name,
+    fusion: FUSION_PRESETS[0].name,
+  };
+
+  constructor(
+    private sim: Simulator,
+    container: HTMLElement,
+    private scene: Scene,
+    private onApplyDistribution: (distribution: Record<string, number>) => void,
+    private onPresetApplied: (preset: Preset) => void,
+  ) {
+    this.gui = new GUI({ container, title: 'Parameters' });
+    this.state.preset = PRESETS[0].name;
+    this.state.timeScale = PRESETS[0].initialTimeScale;
+    this.distribution = { ...PRESETS[0].distribution };
+    this.buildEnvironmentFolder();
+    this.buildDistributionFolder();
+    this.buildBondingFolder();
+    this.buildFusionFolder();
+    this.applyPreset(PRESETS[0]);
+  }
+
+  private buildBondingFolder(): void {
+    const folder = this.gui.addFolder('화학 결합');
+    folder
+      .add(this.subPresetState, 'bonding', BONDING_PRESETS.map((p) => p.name))
+      .name('▾ 빠른 적용')
+      .onChange((name: string) => this.applyBondingPreset(name));
+    folder.add(this.sim, 'bondingEnabled').name('Enable bonding').listen();
+    folder.add(this.sim, 'bondStiffness', 10, 400, 1).name('Stiffness k').listen();
+    folder.add(this.sim, 'bondFormFactor', 0.6, 2.0, 0.05).name('Form r/σ').listen();
+    folder.add(this.sim, 'bondBreakFactor', 1.5, 6.0, 0.1).name('Break r/r₀').listen();
+  }
+
+  private applyBondingPreset(name: string): void {
+    const preset = BONDING_PRESETS.find((p) => p.name === name) as BondingPreset | undefined;
+    if (!preset) return;
+    if (preset.bondingEnabled !== undefined) this.sim.bondingEnabled = preset.bondingEnabled;
+    if (preset.bondStiffness !== undefined) this.sim.bondStiffness = preset.bondStiffness;
+    if (preset.bondFormFactor !== undefined) this.sim.bondFormFactor = preset.bondFormFactor;
+    if (preset.bondBreakFactor !== undefined) this.sim.bondBreakFactor = preset.bondBreakFactor;
+  }
+
+  private buildEnvironmentFolder(): void {
+    const folder = this.gui.addFolder('환경');
+    folder
+      .add(this.subPresetState, 'env', ENV_PRESETS.map((p) => p.name))
+      .name('▾ 빠른 적용')
+      .onChange((name: string) => this.applyEnvPreset(name));
+    folder.add(this.sim, 'targetTemperatureK', 1, 30000, 1).name('Temperature (K)').listen();
+    folder.add(this.sim, 'gravity', -0.5, 0.5, 0.001).name('Gravity (-Y)').listen();
+    folder.add(this.sim, 'windX', -0.5, 0.5, 0.001).name('Wind (+X)').listen();
+    folder.add(this.sim, 'selfGravity', 0, 1.5, 0.01).name('Self-gravity').listen();
+    folder.add(this.sim, 'thermostatTau', 0.05, 5, 0.05).name('Thermostat τ').listen();
+  }
+
+  private applyEnvPreset(name: string): void {
+    const preset = ENV_PRESETS.find((p) => p.name === name) as EnvPreset | undefined;
+    if (!preset) return;
+    if (preset.targetTemperatureK !== undefined) this.sim.targetTemperatureK = preset.targetTemperatureK;
+    if (preset.gravity !== undefined) this.sim.gravity = preset.gravity;
+    if (preset.windX !== undefined) this.sim.windX = preset.windX;
+    if (preset.selfGravity !== undefined) this.sim.selfGravity = preset.selfGravity;
+    if (preset.thermostatTau !== undefined) this.sim.thermostatTau = preset.thermostatTau;
+  }
+
+  private buildDistributionFolder(): void {
+    const folder = this.gui.addFolder('입자 구성');
+    folder
+      .add(this.subPresetState, 'composition', COMPOSITION_PRESETS.map((p) => p.name))
+      .name('▾ 빠른 적용')
+      .onChange((name: string) => this.applyCompositionPreset(name));
+    for (const sp of SPECIES) {
+      if (!(sp.name in this.distribution)) this.distribution[sp.name] = 0;
+      const ctrl = folder
+        .add(this.distribution, sp.name, 0, 800, 1)
+        .name(sp.name)
+        .onChange(() => {
+          if (this.suppressApply) return;
+          this.onApplyDistribution(this.getDistribution());
+        });
+      this.distributionControllers[sp.name] = ctrl;
+    }
+    folder.add({ apply: () => this.onApplyDistribution(this.getDistribution()) }, 'apply').name('Reset & Apply');
+  }
+
+  private applyCompositionPreset(name: string): void {
+    const preset = COMPOSITION_PRESETS.find((p) => p.name === name) as CompositionPreset | undefined;
+    if (!preset || !preset.distribution) return;
+    this.suppressApply = true;
+    for (const [k, v] of Object.entries(preset.distribution)) {
+      this.distribution[k] = v;
+      this.distributionControllers[k]?.setValue(v);
+    }
+    this.suppressApply = false;
+    this.onApplyDistribution(this.getDistribution());
+  }
+
+  private buildFusionFolder(): void {
+    const folder = this.gui.addFolder('핵융합 (간이 모델)');
+    folder
+      .add(this.subPresetState, 'fusion', FUSION_PRESETS.map((p) => p.name))
+      .name('▾ 빠른 적용')
+      .onChange((name: string) => this.applyFusionPreset(name));
+    folder.add(this.sim, 'fusionEnabled').name('Enable H+H→He').listen();
+    folder.add(this.sim, 'fusionThresholdReduced', 1, 200, 1).name('KE 임계값').listen();
+    folder.add(this.sim, 'fusionEnergyRelease', 0, 50, 0.5).name('방출 에너지').listen();
+  }
+
+  private applyFusionPreset(name: string): void {
+    const preset = FUSION_PRESETS.find((p) => p.name === name) as FusionPreset | undefined;
+    if (!preset) return;
+    if (preset.fusionEnabled !== undefined) this.sim.fusionEnabled = preset.fusionEnabled;
+    if (preset.fusionThresholdReduced !== undefined) this.sim.fusionThresholdReduced = preset.fusionThresholdReduced;
+    if (preset.fusionEnergyRelease !== undefined) this.sim.fusionEnergyRelease = preset.fusionEnergyRelease;
+  }
+
+  applyPreset(preset: Preset, applyDistribution = true): void {
+    this.state.preset = preset.name;
+    this.state.timeScale = preset.initialTimeScale;
+    this.sim.targetTemperatureK = preset.temperatureK;
+    this.sim.gravity = preset.gravity;
+    this.sim.windX = preset.windX;
+    this.sim.selfGravity = preset.selfGravity;
+    this.sim.bondingEnabled = preset.bondingEnabled;
+    this.sim.fusionEnabled = preset.fusionEnabled;
+    this.scene.setRenderMode(preset.renderMode);
+    this.scene.setEnvironmentVisible(preset.showEnvironment);
+
+    for (const sp of SPECIES) this.distribution[sp.name] = preset.distribution[sp.name] ?? 0;
+    this.suppressApply = true;
+    for (const [name, ctrl] of Object.entries(this.distributionControllers)) {
+      ctrl.setValue(this.distribution[name]);
+    }
+    this.suppressApply = false;
+    if (applyDistribution) this.onApplyDistribution(this.getDistribution());
+    this.onPresetApplied(preset);
+  }
+
+  applyPresetByName(name: string): void {
+    const p = PRESETS.find((x) => x.name === name);
+    if (p) this.applyPreset(p);
+  }
+
+  togglePause(): boolean {
+    this.state.paused = !this.state.paused;
+    return this.state.paused;
+  }
+
+  setTimeScale(scale: number): void {
+    this.state.timeScale = scale;
+  }
+
+  getDistribution(): Record<string, number> {
+    return { ...this.distribution };
+  }
+}

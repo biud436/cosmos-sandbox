@@ -1,0 +1,21 @@
+{
+  "name": "cosmos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cosmos — interactive particle sandbox: molecular dynamics, chemistry, self-gravity, fusion, black holes.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lil-gui": "^0.20.0",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
