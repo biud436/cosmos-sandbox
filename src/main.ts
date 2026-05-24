@@ -6,8 +6,8 @@ import { PRESETS } from './ui/presets';
 import { Tools } from './ui/Tools';
 
 const BOX_HALF = 150;
-const MAX_PARTICLES = 8000;
-const MAX_PER_SPECIES = 3000;
+const MAX_PARTICLES = 14000;
+const MAX_PER_SPECIES = 5500;
 const CUTOFF = 2.5;
 
 const viewport = document.getElementById('viewport');

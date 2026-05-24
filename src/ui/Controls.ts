@@ -185,7 +185,7 @@ export class Controls {
     for (const sp of SPECIES) {
       if (!(sp.name in this.distribution)) this.distribution[sp.name] = 0;
       const ctrl = folder
-        .add(this.distribution, sp.name, 0, 3000, 1)
+        .add(this.distribution, sp.name, 0, 5500, 1)
         .name(sp.name)
         .onChange(() => {
           if (this.suppressApply) return;

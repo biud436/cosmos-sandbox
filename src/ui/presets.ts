@@ -42,7 +42,7 @@ export const PRESETS: Preset[] = [
     selfGravity: 0.9,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 2400, He: 360, DM: 2400 },
+    distribution: { H: 4500, He: 700, DM: 4500 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
@@ -57,7 +57,7 @@ export const PRESETS: Preset[] = [
     hubbleDecay: 0.12,
     openBoundary: true,
     starFormationEnabled: false,
-    starFormationRadius: 2.5,
+    starFormationRadius: 5.0,
     starFormationCount: 3,
     starFormationCooldown: 0.15,
     cosmicEvents: [
@@ -91,9 +91,9 @@ export const PRESETS: Preset[] = [
         description: '암흑 시대의 끝. 암흑물질 헤일로 안의 가스가 응집되어 최초의 별이 탄생합니다.',
         action: (sim) => {
           sim.starFormationEnabled = true;
-          sim.starFormationRadius = 2.5;
+          sim.starFormationRadius = 5.0;
           sim.starFormationCount = 3;
-          sim.forceFormStars(60, 2.5, 4);
+          sim.forceFormStars(80, 5.0, 4);
         },
       },
       {
@@ -103,8 +103,8 @@ export const PRESETS: Preset[] = [
         action: (sim) => {
           sim.seedGalaxies({
             galaxyCount: 14,
-            starsPerGalaxy: 24,
-            radius: 7.0,
+            starsPerGalaxy: 30,
+            radius: 12.0,
             starClusterSize: 4,
             orbitalSpeed: 1.0,
           });
@@ -115,7 +115,7 @@ export const PRESETS: Preset[] = [
         name: 'Stellar Baby Boom',
         description: '남은 가스가 응집해 별이 폭발적으로 더 탄생합니다.',
         action: (sim) => {
-          sim.forceFormStars(120, 2.0, 4);
+          sim.forceFormStars(150, 5.0, 4);
         },
       },
       {
@@ -123,7 +123,7 @@ export const PRESETS: Preset[] = [
         name: 'Second Wave',
         description: '남은 가스에서 다시 별이 형성됩니다.',
         action: (sim) => {
-          sim.forceFormStars(80, 2.5, 4);
+          sim.forceFormStars(100, 6.0, 4);
         },
       },
       {
@@ -131,7 +131,7 @@ export const PRESETS: Preset[] = [
         name: 'Late Star Formation',
         description: '잔존 가스로 마지막 별들이 태어납니다.',
         action: (sim) => {
-          sim.forceFormStars(60, 3.0, 3);
+          sim.forceFormStars(80, 7.0, 3);
         },
       },
     ],
