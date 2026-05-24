@@ -677,9 +677,38 @@ export class Scene {
     if (this.orbitFrameCounter % 6 !== 0) return;
 
     const bhs: Effector[] = [];
-    for (const e of sim.effectors) if (e.type === 'blackhole') bhs.push(e);
+    const allStars: Effector[] = [];
+    for (const e of sim.effectors) {
+      if (e.type === 'blackhole') bhs.push(e);
+      else if (e.type === 'star') allStars.push(e);
+    }
+
+    // If no BHs exist, fall back to using stellar cluster COM as the orbit focus.
+    // This is what stars actually orbit around when the central potential is from
+    // the cluster's own stellar mass rather than a single dominant compact object.
+    let clusterCOM: { x: number; y: number; z: number; vx: number; vy: number; vz: number; M: number } | null = null;
+    if (bhs.length === 0 && allStars.length >= 3) {
+      let mx = 0, my = 0, mz = 0, mvx = 0, mvy = 0, mvz = 0, totM = 0;
+      for (const s of allStars) {
+        mx += s.x * s.strength;
+        my += s.y * s.strength;
+        mz += s.z * s.strength;
+        mvx += s.vx * s.strength;
+        mvy += s.vy * s.strength;
+        mvz += s.vz * s.strength;
+        totM += s.strength;
+      }
+      if (totM > 0) {
+        clusterCOM = {
+          x: mx / totM, y: my / totM, z: mz / totM,
+          vx: mvx / totM, vy: mvy / totM, vz: mvz / totM,
+          M: totM * 0.65,
+        };
+      }
+    }
 
     const G = sim.effectorPairG;
+    const Gstar = G * sim.starStarGMul;
     const segments = this.orbitSegments;
     const positions = this.orbitPositions;
     const selPositions = this.selectedOrbitPositions;
@@ -687,7 +716,7 @@ export class Scene {
     let selWriteVertex = 0;
     const maxVerts = this.orbitMaxStars * segments * 2;
     const selMaxVerts = segments * 2;
-    let selectedHost: Effector | null = null;
+    let selectedHost: { x: number; y: number; z: number } | null = null;
     let selectedStar: Effector | null = null;
 
     for (const star of sim.effectors) {
@@ -695,7 +724,7 @@ export class Scene {
       const isSelected = star === this.selectedEffector;
       if (!isSelected && writeVertex >= maxVerts) continue;
 
-      let host: Effector | null = null;
+      let host: { x: number; y: number; z: number } | null = null;
       let hostEnergy = 0;
       let hostGM = 0;
       let hostRx = 0, hostRy = 0, hostRz = 0;
@@ -722,6 +751,28 @@ export class Scene {
           hostRx = rxB; hostRy = ryB; hostRz = rzB;
           hostVx = vxB; hostVy = vyB; hostVz = vzB;
           hostRMag = rMagB;
+        }
+      }
+      if (!host && clusterCOM) {
+        const rxC = star.x - clusterCOM.x;
+        const ryC = star.y - clusterCOM.y;
+        const rzC = star.z - clusterCOM.z;
+        const rMagC = Math.sqrt(rxC * rxC + ryC * ryC + rzC * rzC);
+        if (rMagC > 1e-3) {
+          const vxC = star.vx - clusterCOM.vx;
+          const vyC = star.vy - clusterCOM.vy;
+          const vzC = star.vz - clusterCOM.vz;
+          const v2C = vxC * vxC + vyC * vyC + vzC * vzC;
+          const GMC = Gstar * clusterCOM.M;
+          const eC = 0.5 * v2C - GMC / rMagC;
+          if (eC < 0) {
+            host = clusterCOM;
+            hostEnergy = eC;
+            hostGM = GMC;
+            hostRx = rxC; hostRy = ryC; hostRz = rzC;
+            hostVx = vxC; hostVy = vyC; hostVz = vzC;
+            hostRMag = rMagC;
+          }
         }
       }
       if (!host) continue;

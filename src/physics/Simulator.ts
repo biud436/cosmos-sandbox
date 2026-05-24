@@ -117,7 +117,7 @@ export class Simulator {
   repulsorG = 4;
   freezerDamp = 0.92;
   effectorPairG = 0.15;
-  starStarGMul = 0.15;
+  starStarGMul = 0.45;
   starConsumeRadiusMul = 0.55;
   bhInspiralRate = 0.6;
   bhInspiralRange = 8;
@@ -430,7 +430,30 @@ export class Simulator {
           s.vz = cvz + tz * k;
         }
       } else if (newStars.length >= 2) {
-        this.spinAroundAxis(newStars, [axisX, axisY, axisZ], [cx, cy, cz], opts.orbitalSpeed);
+        // No central BH: stars orbit cluster COM with stellar mass providing the central potential.
+        // Use 65% of total stellar mass as effective central mass (rough virial approximation
+        // accounting for the fact that mass is distributed, not point-like).
+        let totalStellarMass = 0;
+        for (const s of newStars) totalStellarMass += s.strength;
+        const M = totalStellarMass * 0.65;
+        const Gpair = this.effectorPairG * this.starStarGMul;
+        for (const s of newStars) {
+          const rx = s.x - cx;
+          const ry = s.y - cy;
+          const rz = s.z - cz;
+          const r = Math.hypot(rx, ry, rz);
+          if (r < 0.3) continue;
+          const tx = axisY * rz - axisZ * ry;
+          const ty = axisZ * rx - axisX * rz;
+          const tz = axisX * ry - axisY * rx;
+          const tlen = Math.hypot(tx, ty, tz);
+          if (tlen < 1e-3) continue;
+          const vCirc = Math.sqrt(Gpair * M / r) * opts.orbitalSpeed;
+          const k = vCirc / tlen;
+          s.vx = cvx + tx * k;
+          s.vy = cvy + ty * k;
+          s.vz = cvz + tz * k;
+        }
       }
 
       toRemove.sort((a, b) => b - a);
@@ -474,25 +497,6 @@ export class Simulator {
       }
     }
     return bestIdx;
-  }
-
-  private spinAroundAxis(stars: Effector[], axis: [number, number, number], center: [number, number, number], orbitalSpeed: number): void {
-    const ax = axis[0], ay = axis[1], az = axis[2];
-    const cx = center[0], cy = center[1], cz = center[2];
-    for (const s of stars) {
-      const rx = s.x - cx;
-      const ry = s.y - cy;
-      const rz = s.z - cz;
-      const tx = ay * rz - az * ry;
-      const ty = az * rx - ax * rz;
-      const tz = ax * ry - ay * rx;
-      const len = Math.hypot(tx, ty, tz);
-      if (len < 1e-3) continue;
-      const k = orbitalSpeed / len;
-      s.vx += tx * k;
-      s.vy += ty * k;
-      s.vz += tz * k;
-    }
   }
 
   spinUpRecentStars(orbitalSpeed: number, withinSimTime: number): number {
@@ -1076,15 +1080,27 @@ export class Simulator {
   }
 
   private ejectSupernovaParticles(x: number, y: number, z: number, vx: number, vy: number, vz: number, ejectaMass: number): void {
-    const heId = SPECIES.findIndex((s) => s.name === 'He');
-    const n2Id = SPECIES.findIndex((s) => s.name === 'N₂');
-    const o2Id = SPECIES.findIndex((s) => s.name === 'O₂');
-    const dustId = SPECIES.findIndex((s) => s.name === 'Dust');
+    const find = (name: string) => SPECIES.findIndex((s) => s.name === name);
+    const heId = find('He');
+    const n2Id = find('N₂');
+    const o2Id = find('O₂');
+    const dustId = find('Dust');
+    const cId = find('C');
+    const siId = find('Si');
+    const feId = find('Fe');
+    const auId = find('Au');
+    // Stellar nucleosynthesis abundances (alpha-process favored).
+    // He · C · O₂ most common, Si/N₂ moderate, Fe rarer, Au very rare (r-process).
     const speciesPool: number[] = [];
-    if (heId >= 0) { speciesPool.push(heId, heId, heId); }
-    if (n2Id >= 0) { speciesPool.push(n2Id, n2Id); }
-    if (o2Id >= 0) { speciesPool.push(o2Id, o2Id); }
+    if (heId >= 0) { for (let k = 0; k < 6; k++) speciesPool.push(heId); }
+    if (cId >= 0) { for (let k = 0; k < 4; k++) speciesPool.push(cId); }
+    if (o2Id >= 0) { for (let k = 0; k < 4; k++) speciesPool.push(o2Id); }
+    if (siId >= 0) { for (let k = 0; k < 2; k++) speciesPool.push(siId); }
+    if (n2Id >= 0) { for (let k = 0; k < 2; k++) speciesPool.push(n2Id); }
+    if (feId >= 0) { speciesPool.push(feId); }
     if (dustId >= 0) { speciesPool.push(dustId); }
+    // Au only seeded with low probability per supernova
+    const sprinkleGold = auId >= 0 && Math.random() < 0.18;
     if (speciesPool.length === 0) return;
 
     const count = Math.max(4, Math.min(40, Math.floor(ejectaMass * this.supernovaEjectaCountFactor)));
@@ -1097,7 +1113,9 @@ export class Simulator {
       const dx = s * Math.cos(t);
       const dy = u;
       const dz = s * Math.sin(t);
-      const sp = speciesPool[(Math.random() * speciesPool.length) | 0];
+      let sp = speciesPool[(Math.random() * speciesPool.length) | 0];
+      // Sprinkle a single Au atom into ~18% of supernovae as a special trace
+      if (sprinkleGold && auId >= 0 && k === 0) sp = auId;
       const r0 = 0.6 + Math.random() * 0.3;
       const speed = baseSpeed * (0.7 + Math.random() * 0.6);
       const i = this.count++;
