@@ -106,7 +106,7 @@ export const PRESETS: Preset[] = [
             starsPerGalaxy: 28,
             radius: 5.0,
             starClusterSize: 4,
-            orbitalSpeed: 0.95,
+            orbitalSpeed: 1.05,
             centralBHMass: 28,
             centralBHRadius: 0.32,
           });

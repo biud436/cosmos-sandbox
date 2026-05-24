@@ -72,20 +72,21 @@ export class Controls {
     folder.add(this.sim, 'starFormationRadius', 0.3, 3.0, 0.05).name('SF radius').listen();
     folder.add(this.sim, 'starFormationCount', 4, 80, 1).name('SF threshold').listen();
     folder.add(this.sim, 'starFormationCooldown', 0.05, 2.0, 0.05).name('SF cooldown').listen();
-    folder.add(this.sim, 'starFormationDMMin', 0, 40, 1).name('SF DM 최소').listen();
-    folder.add(this.sim, 'starFormationDMRadius', 0.5, 10, 0.1).name('SF DM 반경').listen();
+    folder.add(this.sim, 'starFormationDMMin', 0, 40, 1).name('별 형성: 암흑물질 최소').listen();
+    folder.add(this.sim, 'starFormationDMRadius', 0.5, 10, 0.1).name('별 형성: 암흑물질 헤일로 반경').listen();
     folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
   }
 
   private buildVisibilityFolder(): void {
     const folder = this.gui.addFolder('시야 (Visibility)');
-    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers'; label: string }[] = [
+    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits'; label: string }[] = [
       { key: 'particles', label: '입자' },
       { key: 'bonds', label: '결합' },
       { key: 'stars', label: '별' },
       { key: 'blackholes', label: '블랙홀' },
       { key: 'repulsors', label: '반발자' },
       { key: 'freezers', label: '동결자' },
+      { key: 'orbits', label: '공전 궤도' },
       { key: 'boundary', label: '우주 경계' },
     ];
     for (const g of groups) {

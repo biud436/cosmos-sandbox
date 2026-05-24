@@ -68,7 +68,7 @@ export class Layout {
       row.dot.style.background = hex;
       row.dot.style.boxShadow = `0 0 6px ${hex}`;
       row.name.textContent = entry.label;
-      row.count.textContent = String(entry.count);
+      row.count.textContent = `${entry.count} · M ${entry.mass.toFixed(0)}`;
       this.hierBody.appendChild(row.row);
     }
     for (const [label, row] of this.hierRows) {
@@ -209,30 +209,33 @@ export class Layout {
   private updateStarCatalog(effectors: Effector[]): void {
     const seen = new Set<Effector>();
     const named = effectors.filter((e) => !!e.name);
-    named.sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'star' ? -1 : 1;
-      return (a.name || '').localeCompare(b.name || '');
-    });
+    named.sort((a, b) => b.strength - a.strength);
+    let rank = 0;
     for (const eff of named) {
+      rank++;
       seen.add(eff);
       let row = this.starRows.get(eff);
       if (!row) {
         row = document.createElement('div');
         row.className = 'star-row';
+        const rankEl = document.createElement('span');
+        rankEl.className = 'star-rank';
         const dot = document.createElement('span');
         dot.className = 'star-dot';
         const name = document.createElement('span');
         name.className = 'star-name';
         const mass = document.createElement('span');
         mass.className = 'star-mass';
-        row.append(dot, name, mass);
+        row.append(rankEl, dot, name, mass);
         row.addEventListener('click', () => this.onSelectEffector?.(eff));
         this.starBody.appendChild(row);
         this.starRows.set(eff, row);
       }
-      const dot = row.children[0] as HTMLElement;
-      const nameEl = row.children[1] as HTMLElement;
-      const massEl = row.children[2] as HTMLElement;
+      const rankEl = row.children[0] as HTMLElement;
+      const dot = row.children[1] as HTMLElement;
+      const nameEl = row.children[2] as HTMLElement;
+      const massEl = row.children[3] as HTMLElement;
+      rankEl.textContent = `#${rank}`;
       const color = eff.type === 'star' ? '#ffd28a' : '#9affb2';
       dot.style.background = color;
       dot.style.boxShadow = `0 0 6px ${color}`;

@@ -27,7 +27,14 @@ export class Scene {
     blackholes: true,
     repulsors: true,
     freezers: true,
+    orbits: false,
   };
+  private orbitLines: THREE.LineSegments | null = null;
+  private orbitGeom: THREE.BufferGeometry | null = null;
+  private orbitPositions: Float32Array | null = null;
+  private orbitSegments = 64;
+  private orbitMaxStars = 300;
+  private orbitFrameCounter = 0;
   private bondPositions: Float32Array | null = null;
   private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
   private effectorClock = 0;
@@ -67,6 +74,7 @@ export class Scene {
     this.buildParticleMeshes();
     this.buildGasRenderer();
     this.buildBondRenderer();
+    this.buildOrbitRenderer();
 
     const ro = new ResizeObserver(() => this.onResize(container));
     ro.observe(container);
@@ -240,6 +248,9 @@ export class Scene {
         if (this.universeMesh) this.universeMesh.visible = visible;
         if (this.universeShell) this.universeShell.visible = visible;
         break;
+      case 'orbits':
+        if (this.orbitLines) this.orbitLines.visible = visible;
+        break;
     }
   }
 
@@ -363,6 +374,28 @@ export class Scene {
     this.bondPositions = positions;
   }
 
+  private buildOrbitRenderer(): void {
+    const verticesPerOrbit = this.orbitSegments * 2;
+    const cap = this.orbitMaxStars * verticesPerOrbit * 3;
+    const positions = new Float32Array(cap);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setDrawRange(0, 0);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x6cc6ff,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    });
+    const lines = new THREE.LineSegments(geom, mat);
+    lines.frustumCulled = false;
+    lines.visible = this.visibility.orbits;
+    this.scene.add(lines);
+    this.orbitLines = lines;
+    this.orbitGeom = geom;
+    this.orbitPositions = positions;
+  }
+
   setRenderMode(mode: 'solid' | 'gas'): void {
     if (mode === this.renderMode) return;
     this.renderMode = mode;
@@ -400,6 +433,7 @@ export class Scene {
     this.setUniverseScale(sim.scaleFactor);
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
+    this.syncOrbits(sim);
 
     this.camera.updateMatrixWorld();
     this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
@@ -486,6 +520,106 @@ export class Scene {
       case 'repulsor': return 'repulsors';
       case 'freezer': return 'freezers';
     }
+  }
+
+  private syncOrbits(sim: Simulator): void {
+    if (!this.visibility.orbits || !this.orbitGeom || !this.orbitPositions || !this.orbitLines) return;
+    this.orbitFrameCounter++;
+    if (this.orbitFrameCounter % 6 !== 0) return;
+
+    const bhs: Effector[] = [];
+    for (const e of sim.effectors) if (e.type === 'blackhole') bhs.push(e);
+
+    const G = sim.effectorPairG;
+    const segments = this.orbitSegments;
+    const positions = this.orbitPositions;
+    let writeVertex = 0;
+    const maxVerts = this.orbitMaxStars * segments * 2;
+
+    for (const star of sim.effectors) {
+      if (star.type !== 'star') continue;
+      if (writeVertex >= maxVerts) break;
+
+      let host: Effector | null = null;
+      let bestD2 = Infinity;
+      for (const bh of bhs) {
+        if (bh.strength < star.strength * 1.5) continue;
+        const dx = star.x - bh.x;
+        const dy = star.y - bh.y;
+        const dz = star.z - bh.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          host = bh;
+        }
+      }
+      if (!host) continue;
+
+      const GM = G * host.strength;
+      const rx = star.x - host.x;
+      const ry = star.y - host.y;
+      const rz = star.z - host.z;
+      const vx = star.vx - host.vx;
+      const vy = star.vy - host.vy;
+      const vz = star.vz - host.vz;
+      const rMag = Math.sqrt(rx * rx + ry * ry + rz * rz);
+      if (rMag < 1e-3) continue;
+      const v2 = vx * vx + vy * vy + vz * vz;
+      const energy = 0.5 * v2 - GM / rMag;
+      if (energy >= 0) continue;
+      const a = -GM / (2 * energy);
+
+      const Lx = ry * vz - rz * vy;
+      const Ly = rz * vx - rx * vz;
+      const Lz = rx * vy - ry * vx;
+      const L2 = Lx * Lx + Ly * Ly + Lz * Lz;
+      if (L2 < 1e-6) continue;
+
+      const evx = (vy * Lz - vz * Ly) / GM - rx / rMag;
+      const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
+      const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
+      const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
+      if (e >= 0.97) continue;
+
+      const eHatX = e > 1e-6 ? evx / e : rx / rMag;
+      const eHatY = e > 1e-6 ? evy / e : ry / rMag;
+      const eHatZ = e > 1e-6 ? evz / e : rz / rMag;
+      const pPx = Ly * eHatZ - Lz * eHatY;
+      const pPy = Lz * eHatX - Lx * eHatZ;
+      const pPz = Lx * eHatY - Ly * eHatX;
+      const pMag = Math.sqrt(pPx * pPx + pPy * pPy + pPz * pPz);
+      if (pMag < 1e-6) continue;
+      const perpX = pPx / pMag;
+      const perpY = pPy / pMag;
+      const perpZ = pPz / pMag;
+
+      const semiLatus = a * (1 - e * e);
+      let prevX = 0, prevY = 0, prevZ = 0;
+      for (let i = 0; i <= segments; i++) {
+        const theta = (2 * Math.PI * i) / segments;
+        const r = semiLatus / (1 + e * Math.cos(theta));
+        const cT = Math.cos(theta);
+        const sT = Math.sin(theta);
+        const x = host.x + r * (cT * eHatX + sT * perpX);
+        const y = host.y + r * (cT * eHatY + sT * perpY);
+        const z = host.z + r * (cT * eHatZ + sT * perpZ);
+        if (i > 0) {
+          positions[writeVertex * 3 + 0] = prevX;
+          positions[writeVertex * 3 + 1] = prevY;
+          positions[writeVertex * 3 + 2] = prevZ;
+          writeVertex++;
+          positions[writeVertex * 3 + 0] = x;
+          positions[writeVertex * 3 + 1] = y;
+          positions[writeVertex * 3 + 2] = z;
+          writeVertex++;
+          if (writeVertex >= maxVerts) break;
+        }
+        prevX = x; prevY = y; prevZ = z;
+      }
+    }
+
+    this.orbitGeom.setDrawRange(0, writeVertex);
+    (this.orbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
   private syncEffectors(sim: Simulator, frameDt: number): void {

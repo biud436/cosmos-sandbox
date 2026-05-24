@@ -32,6 +32,7 @@ export interface MoleculeEntry {
   label: string;
   count: number;
   color: number;
+  mass: number;
 }
 
 export interface CosmicEvent {
@@ -585,9 +586,6 @@ export class Simulator {
       e.x *= factor;
       e.y *= factor;
       e.z *= factor;
-      e.vx *= drag;
-      e.vy *= drag;
-      e.vz *= drag;
     }
   }
 
@@ -1363,11 +1361,13 @@ export class Simulator {
     const componentSize = new Int32Array(n);
     const componentSpeciesMask = new Int32Array(n);
     const componentFirstMember = new Int32Array(n);
+    const componentMass = new Float64Array(n);
     for (let i = 0; i < n; i++) componentFirstMember[i] = -1;
     for (let i = 0; i < n; i++) {
       const r = find(i);
       componentSize[r]++;
       componentSpeciesMask[r] |= 1 << this.species[i];
+      componentMass[r] += SPECIES[this.species[i]].mass;
       if (componentFirstMember[r] === -1) componentFirstMember[r] = i;
     }
 
@@ -1382,13 +1382,14 @@ export class Simulator {
       const existing = tally.get(label);
       if (existing) {
         existing.count++;
+        existing.mass += componentMass[r];
       } else {
-        tally.set(label, { label, count: 1, color: repSpeciesObj.color });
+        tally.set(label, { label, count: 1, color: repSpeciesObj.color, mass: componentMass[r] });
       }
     }
 
     const out = Array.from(tally.values());
-    out.sort((a, b) => b.count - a.count);
+    out.sort((a, b) => b.mass - a.mass);
     return out;
   }
 
