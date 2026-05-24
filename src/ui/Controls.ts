@@ -59,8 +59,33 @@ export class Controls {
     this.buildBondingFolder();
     this.buildFusionFolder();
     this.buildCosmologyFolder();
+    this.buildInitialConditionsFolder();
+    this.buildEffectorPhysicsFolder();
     this.buildVisibilityFolder();
     this.applyPreset(PRESETS[0]);
+  }
+
+  private buildInitialConditionsFolder(): void {
+    const folder = this.gui.addFolder('초기 조건');
+    folder
+      .add(this.sim, 'initialPattern', ['uniform', 'clumpy'])
+      .name('초기 분포 패턴').listen();
+    folder.add(this.sim, 'initialClumpCount', 1, 40, 1).name('클럼프 개수').listen();
+    folder.add(this.sim, 'initialClumpSpread', 0.005, 0.30, 0.005).name('클럼프 퍼짐').listen();
+    folder.add(this.sim, 'initialBoundingRadius', 0.05, 1.0, 0.05).name('초기 분포 반경').listen();
+    folder.add(this.sim, 'initialVelocityScale', 0, 3, 0.05).name('초기 속도 스케일').listen();
+  }
+
+  private buildEffectorPhysicsFolder(): void {
+    const folder = this.gui.addFolder('효과기 물리');
+    folder.add(this.sim, 'effectorPairG', 0, 1.5, 0.01).name('효과기 상호 G').listen();
+    folder.add(this.sim, 'blackHoleG', 0, 4.0, 0.05).name('블랙홀 → 입자 G').listen();
+    folder.add(this.sim, 'starG', 0, 4.0, 0.05).name('별 → 입자 G').listen();
+    folder.add(this.sim, 'repulsorG', 0, 10, 0.1).name('반발자 G').listen();
+    folder.add(this.sim, 'freezerDamp', 0.5, 0.999, 0.001).name('동결자 감쇠').listen();
+    folder.add(this.sim, 'maxParticleSpeed', 0, 40, 0.5).name('입자 속도 캡').listen();
+    folder.add(this.sim, 'maxEffectorSpeed', 0, 30, 0.5).name('효과기 속도 캡').listen();
+    folder.add(this.sim, 'supernovaMassThreshold', 50, 500, 10).name('초신성 질량 임계').listen();
   }
 
   private buildCosmologyFolder(): void {
@@ -79,11 +104,12 @@ export class Controls {
 
   private buildVisibilityFolder(): void {
     const folder = this.gui.addFolder('시야 (Visibility)');
-    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits'; label: string }[] = [
+    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies'; label: string }[] = [
       { key: 'particles', label: '입자' },
       { key: 'bonds', label: '결합' },
       { key: 'stars', label: '별' },
       { key: 'blackholes', label: '블랙홀' },
+      { key: 'galaxies', label: '은하 헤일로' },
       { key: 'repulsors', label: '반발자' },
       { key: 'freezers', label: '동결자' },
       { key: 'orbits', label: '공전 궤도' },

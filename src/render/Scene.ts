@@ -28,7 +28,9 @@ export class Scene {
     repulsors: true,
     freezers: true,
     orbits: false,
+    galaxies: true,
   };
+  private galaxyHalos = new Map<Effector, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
   private orbitLines: THREE.LineSegments | null = null;
   private orbitGeom: THREE.BufferGeometry | null = null;
   private orbitPositions: Float32Array | null = null;
@@ -259,6 +261,9 @@ export class Scene {
         if (this.selectedOrbitLines) this.selectedOrbitLines.visible = visible;
         if (this.selectedOrbitLink) this.selectedOrbitLink.visible = visible;
         break;
+      case 'galaxies':
+        for (const { mesh } of this.galaxyHalos.values()) mesh.visible = visible;
+        break;
     }
   }
 
@@ -480,6 +485,7 @@ export class Scene {
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
     this.syncOrbits(sim);
+    this.syncGalaxies(sim);
 
     this.camera.updateMatrixWorld();
     this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
@@ -566,6 +572,103 @@ export class Scene {
       case 'repulsor': return 'repulsors';
       case 'freezer': return 'freezers';
     }
+  }
+
+  private syncGalaxies(sim: Simulator): void {
+    const stars: Effector[] = [];
+    const bhs: Effector[] = [];
+    for (const e of sim.effectors) {
+      if (e.type === 'star') stars.push(e);
+      else if (e.type === 'blackhole') bhs.push(e);
+    }
+    const alive = new Set<Effector>(bhs);
+
+    const maxR = new Map<Effector, number>();
+    const starCount = new Map<Effector, number>();
+    for (const s of stars) {
+      let host: Effector | null = null;
+      let bestD2 = Infinity;
+      for (const bh of bhs) {
+        if (bh.strength < s.strength * 1.5) continue;
+        const dx = s.x - bh.x;
+        const dy = s.y - bh.y;
+        const dz = s.z - bh.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          host = bh;
+        }
+      }
+      if (!host) continue;
+      const r = Math.sqrt(bestD2);
+      const cur = maxR.get(host) ?? 0;
+      if (r > cur) maxR.set(host, r);
+      starCount.set(host, (starCount.get(host) ?? 0) + 1);
+    }
+
+    for (const bh of bhs) {
+      const count = starCount.get(bh) ?? 0;
+      if (count < 3) {
+        const existing = this.galaxyHalos.get(bh);
+        if (existing) {
+          this.scene.remove(existing.mesh);
+          this.galaxyHalos.delete(bh);
+        }
+        continue;
+      }
+      let entry = this.galaxyHalos.get(bh);
+      if (!entry) {
+        const hue = (this.hashEffector(bh) % 360) / 360;
+        const color = new THREE.Color().setHSL(hue, 0.55, 0.55);
+        const geo = new THREE.SphereGeometry(1, 32, 24);
+        const mat = new THREE.ShaderMaterial({
+          side: THREE.BackSide,
+          transparent: true,
+          depthWrite: false,
+          uniforms: { uColor: { value: color } },
+          vertexShader: `
+            varying vec3 vN; varying vec3 vView;
+            void main() {
+              vec4 mv = modelViewMatrix * vec4(position, 1.0);
+              vN = normalize(normalMatrix * normal);
+              vView = normalize(-mv.xyz);
+              gl_Position = projectionMatrix * mv;
+            }
+          `,
+          fragmentShader: `
+            varying vec3 vN; varying vec3 vView;
+            uniform vec3 uColor;
+            void main() {
+              float facing = abs(dot(vN, vView));
+              float interior = 0.06 * (0.5 + 0.5 * facing);
+              float rim = pow(1.0 - facing, 2.2) * 0.40;
+              gl_FragColor = vec4(uColor, interior + rim);
+            }
+          `,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.frustumCulled = false;
+        mesh.visible = this.visibility.galaxies;
+        this.scene.add(mesh);
+        entry = { mesh, mat };
+        this.galaxyHalos.set(bh, entry);
+      }
+      entry.mesh.position.set(bh.x, bh.y, bh.z);
+      const radius = Math.max(2.5, (maxR.get(bh) ?? 4) * 1.15);
+      entry.mesh.scale.setScalar(radius);
+    }
+
+    for (const [bh, entry] of this.galaxyHalos) {
+      if (!alive.has(bh)) {
+        this.scene.remove(entry.mesh);
+        this.galaxyHalos.delete(bh);
+      }
+    }
+  }
+
+  private hashEffector(e: Effector): number {
+    const k = Math.floor(e.bornAt * 1000) ^ Math.floor((e.x + 100) * 13) ^ Math.floor((e.y + 100) * 31);
+    return ((k * 2654435761) >>> 0) & 0xffffff;
   }
 
   private syncOrbits(sim: Simulator): void {
