@@ -130,10 +130,15 @@ export class Simulator {
   onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
   onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
   onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
-  supernovaMassThreshold = 220;
+  supernovaMassThreshold = 60;
   supernovaFullDisruptionProb = 0.25;
   supernovaEjectaSpeed = 3.5;
   supernovaEjectaCountFactor = 0.18;
+  // Stellar lifetime (in sim time units). Massive stars die fast and collapse.
+  // lifetime(m) = base · (refMass / m)^exp  — Salpeter-ish scaling
+  stellarLifetimeBase = 35;
+  stellarLifetimeRefMass = 50;
+  stellarLifetimeExp = 1.6;
   maxParticleSpeed = 10;
   maxEffectorSpeed = 18;
 
@@ -576,6 +581,8 @@ export class Simulator {
       }
     }
 
+    this.checkStellarLifetimes();
+
     this.simTime += dt;
 
     while (this.firedEventCount < this.cosmicEvents.length) {
@@ -866,7 +873,7 @@ export class Simulator {
     eff.vx = vx;
     eff.vy = vy;
     eff.vz = vz;
-    eff.strength = Math.min(180, total * 25);
+    eff.strength = Math.min(200, total * 55);
     eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
     this.starsFormed++;
     this.onStarFormation?.([cx, cy, cz], indices.length);
@@ -1033,6 +1040,48 @@ export class Simulator {
     a.strength = total;
     a.radius = Math.min(2.0, Math.cbrt(a.radius ** 3 + b.radius ** 3));
     a.consumed += b.consumed;
+  }
+
+  private checkStellarLifetimes(): void {
+    if (this.stellarLifetimeBase <= 0) return;
+    const refM = this.stellarLifetimeRefMass;
+    const exp = this.stellarLifetimeExp;
+    const base = this.stellarLifetimeBase;
+    const dying: Effector[] = [];
+    for (const e of this.effectors) {
+      if (e.type !== 'star') continue;
+      const age = this.simTime - e.bornAt;
+      const lifetime = base * Math.pow(refM / Math.max(e.strength, 1e-3), exp);
+      if (age > lifetime) dying.push(e);
+    }
+    if (dying.length === 0) return;
+    for (const star of dying) {
+      this.endOfStarLife(star);
+    }
+  }
+
+  private endOfStarLife(star: Effector): void {
+    const idx = this.effectors.indexOf(star);
+    if (idx < 0) return;
+    const massive = star.strength >= this.supernovaMassThreshold;
+    if (massive) {
+      // Core-collapse supernova path: eject metals + BH remnant (or full disruption)
+      const fullDisruption = Math.random() < this.supernovaFullDisruptionProb;
+      const ejectaFraction = fullDisruption ? 0.95 : 0.45;
+      this.ejectSupernovaParticles(star.x, star.y, star.z, star.vx, star.vy, star.vz, star.strength * ejectaFraction);
+      if (!fullDisruption) {
+        const bh = this.addEffector('blackhole', star.x, star.y, star.z);
+        bh.vx = star.vx; bh.vy = star.vy; bh.vz = star.vz;
+        bh.strength = star.strength * (1 - ejectaFraction);
+        bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
+      }
+      this.onSupernova?.([star.x, star.y, star.z], star.strength);
+    } else {
+      // Low-mass quiet death: eject most of its envelope as gas, no remnant tracked
+      this.ejectSupernovaParticles(star.x, star.y, star.z, star.vx, star.vy, star.vz, star.strength * 0.6);
+    }
+    this.effectors.splice(idx, 1);
+    this.onEffectorRemoved?.(star, 'consumed');
   }
 
   private mergeStars(a: Effector, b: Effector): boolean {

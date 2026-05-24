@@ -94,6 +94,9 @@ export class Controls {
     folder.add(this.sim, 'supernovaFullDisruptionProb', 0, 1, 0.05).name('초신성 완전붕괴 확률').listen();
     folder.add(this.sim, 'supernovaEjectaSpeed', 0, 10, 0.1).name('초신성 분출 속도').listen();
     folder.add(this.sim, 'supernovaEjectaCountFactor', 0, 1, 0.01).name('초신성 분출 입자 계수').listen();
+    folder.add(this.sim, 'stellarLifetimeBase', 0, 200, 1).name('별 수명 기준 (sim)').listen();
+    folder.add(this.sim, 'stellarLifetimeRefMass', 5, 200, 1).name('수명 기준 질량').listen();
+    folder.add(this.sim, 'stellarLifetimeExp', 0, 4, 0.05).name('수명 질량 지수').listen();
   }
 
   private buildCosmologyFolder(): void {
