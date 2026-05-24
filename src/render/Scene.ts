@@ -17,7 +17,7 @@ export class Scene {
   private gridMesh: THREE.GridHelper | null = null;
   private bondGeom: THREE.BufferGeometry | null = null;
   private bondPositions: Float32Array | null = null;
-  private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh }>();
+  private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
   private effectorClock = 0;
   private selectedEffector: Effector | null = null;
   private renderMode: 'solid' | 'gas' = 'solid';
@@ -388,10 +388,16 @@ export class Scene {
       if (selected) {
         (view.selectionRing.material as THREE.MeshBasicMaterial).opacity = 0.4 + 0.3 * Math.sin(this.effectorClock * 5);
       }
+      if (view.influenceRing) {
+        view.influenceRing.visible = selected;
+        if (selected) {
+          (view.influenceRing.material as THREE.MeshBasicMaterial).opacity = 0.12 + 0.06 * Math.sin(this.effectorClock * 2);
+        }
+      }
     }
   }
 
-  private createEffectorView(type: EffectorType): { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh } {
+  private createEffectorView(type: EffectorType): { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null } {
     const group = new THREE.Group();
     group.userData.pickable = true;
     let coreColor: number;
@@ -477,6 +483,32 @@ export class Scene {
       group.add(core);
     }
 
+    let influenceRing: THREE.Mesh | null = null;
+    if (type === 'blackhole') {
+      const horizonGeo = new THREE.SphereGeometry(1.0, 24, 16);
+      const horizonMat = new THREE.MeshBasicMaterial({
+        color: 0xff4422,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.18,
+        depthWrite: false,
+      });
+      const horizonMesh = new THREE.Mesh(horizonGeo, horizonMat);
+      group.add(horizonMesh);
+
+      const infRingGeo = new THREE.RingGeometry(4.8, 5.0, 64);
+      const infRingMat = new THREE.MeshBasicMaterial({
+        color: 0xff8855,
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      influenceRing = new THREE.Mesh(infRingGeo, infRingMat);
+      influenceRing.visible = false;
+      group.add(influenceRing);
+    }
+
     const mat = new THREE.ShaderMaterial({
       side: THREE.DoubleSide,
       transparent: true,
@@ -508,7 +540,7 @@ export class Scene {
     group.add(selectionRing);
 
     this.scene.add(group);
-    return { group, mat, selectionRing };
+    return { group, mat, selectionRing, influenceRing };
   }
 
   pickEffector(clientX: number, clientY: number, sim: Simulator): Effector | null {

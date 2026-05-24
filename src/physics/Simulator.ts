@@ -107,7 +107,7 @@ export class Simulator {
   bondStiffness = 80;
   bondFormFactor = 1.2;
   bondBreakFactor = 3.0;
-  blackHoleG = 3;
+  blackHoleG = 1.6;
   starG = 2;
   starHeatRate = 0.4;
   repulsorG = 4;
@@ -121,7 +121,7 @@ export class Simulator {
   onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
   onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
   onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
-  supernovaMassThreshold = 140;
+  supernovaMassThreshold = 220;
 
   cosmicEvents: CosmicEvent[] = [];
   firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
@@ -653,7 +653,7 @@ export class Simulator {
     a.vy = (a.vy * ma + b.vy * mb) / total;
     a.vz = (a.vz * ma + b.vz * mb) / total;
     a.strength = total;
-    a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
+    a.radius = Math.min(2.0, Math.cbrt(a.radius ** 3 + b.radius ** 3));
     a.consumed += b.consumed;
   }
 
@@ -702,7 +702,7 @@ export class Simulator {
     bh.vy = (bh.vy * ma + star.vy * dm) / total;
     bh.vz = (bh.vz * ma + star.vz * dm) / total;
     bh.strength = total;
-    bh.radius = Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.4);
+    bh.radius = Math.min(1.8, Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.15));
     bh.consumed += 1;
   }
 
@@ -794,7 +794,7 @@ export class Simulator {
 
   addEffector(type: EffectorType, x: number, y: number, z: number): Effector {
     const presets: Record<EffectorType, { radius: number; strength: number }> = {
-      blackhole: { radius: 0.9, strength: 40 },
+      blackhole: { radius: 0.55, strength: 25 },
       star:      { radius: 1.6, strength: 30 },
       repulsor:  { radius: 1.5, strength: 60 },
       freezer:   { radius: 3.0, strength: 0.92 },

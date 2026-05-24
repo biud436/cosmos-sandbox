@@ -39,7 +39,7 @@ export const PRESETS: Preset[] = [
     selfGravity: 2.0,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 400, He: 80, DM: 480 },
+    distribution: { H: 540, He: 80, DM: 380 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
@@ -53,9 +53,9 @@ export const PRESETS: Preset[] = [
     hubbleDecay: 0.4,
     openBoundary: true,
     starFormationEnabled: false,
-    starFormationRadius: 2.2,
-    starFormationCount: 5,
-    starFormationCooldown: 0.2,
+    starFormationRadius: 2.4,
+    starFormationCount: 4,
+    starFormationCooldown: 0.3,
     cosmicEvents: [
       {
         time: 0.5,
