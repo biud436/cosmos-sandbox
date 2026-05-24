@@ -154,7 +154,7 @@ export class Layout {
     this.sPE.textContent = stats.potentialEnergy.toFixed(1);
     this.sFus.textContent = String(stats.fusionEvents);
     this.sBonds.textContent = String(stats.bondCount);
-    this.sBH.textContent = String(sim.blackHoles.length);
+    this.sBH.textContent = String(sim.effectors.length);
   }
 
   setDropHighlight(active: boolean): void {

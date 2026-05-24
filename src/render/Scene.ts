@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPECIES } from '../physics/types';
-import { Simulator } from '../physics/Simulator';
+import { Effector, EffectorType, Simulator } from '../physics/Simulator';
 
 export class Scene {
   readonly scene: THREE.Scene;
@@ -17,8 +17,9 @@ export class Scene {
   private gridMesh: THREE.GridHelper | null = null;
   private bondGeom: THREE.BufferGeometry | null = null;
   private bondPositions: Float32Array | null = null;
-  private blackHoleObjects: { group: THREE.Group; ringMat: THREE.ShaderMaterial }[] = [];
-  private blackHoleClock = 0;
+  private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh }>();
+  private effectorClock = 0;
+  private selectedEffector: Effector | null = null;
   private renderMode: 'solid' | 'gas' = 'solid';
   private gasPoints: THREE.Points | null = null;
   private gasGeom: THREE.BufferGeometry | null = null;
@@ -299,7 +300,7 @@ export class Scene {
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
     this.syncBonds(sim);
-    this.syncBlackHoles(sim, frameDt);
+    this.syncEffectors(sim, frameDt);
     if (this.renderMode === 'solid') {
       const counts = new Int32Array(SPECIES.length);
       for (let i = 0; i < n; i++) {
@@ -361,33 +362,120 @@ export class Scene {
     (this.bondGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
   }
 
-  private syncBlackHoles(sim: Simulator, frameDt: number): void {
-    this.blackHoleClock += frameDt;
-    while (this.blackHoleObjects.length < sim.blackHoles.length) {
-      this.blackHoleObjects.push(this.createBlackHoleObject());
+  private syncEffectors(sim: Simulator, frameDt: number): void {
+    this.effectorClock += frameDt;
+    const alive = new Set(sim.effectors);
+    for (const [eff, view] of this.effectorViews) {
+      if (!alive.has(eff)) {
+        this.scene.remove(view.group);
+        this.effectorViews.delete(eff);
+      }
     }
-    while (this.blackHoleObjects.length > sim.blackHoles.length) {
-      const obj = this.blackHoleObjects.pop()!;
-      this.scene.remove(obj.group);
-    }
-    for (let i = 0; i < sim.blackHoles.length; i++) {
-      const bh = sim.blackHoles[i];
-      const { group, ringMat } = this.blackHoleObjects[i];
-      group.position.set(bh.x, bh.y, bh.z);
-      const r = bh.radius;
-      group.scale.setScalar(r);
-      group.lookAt(this.camera.position);
-      ringMat.uniforms.uTime.value = this.blackHoleClock;
+    for (const eff of sim.effectors) {
+      let view = this.effectorViews.get(eff);
+      if (!view) {
+        view = this.createEffectorView(eff.type);
+        this.effectorViews.set(eff, view);
+      }
+      view.group.position.set(eff.x, eff.y, eff.z);
+      view.group.scale.setScalar(eff.radius);
+      view.group.lookAt(this.camera.position);
+      view.mat.uniforms.uTime.value = this.effectorClock;
+      const selected = eff === this.selectedEffector;
+      view.selectionRing.visible = selected;
+      if (selected) {
+        (view.selectionRing.material as THREE.MeshBasicMaterial).opacity = 0.4 + 0.3 * Math.sin(this.effectorClock * 5);
+      }
     }
   }
 
-  private createBlackHoleObject(): { group: THREE.Group; ringMat: THREE.ShaderMaterial } {
+  private createEffectorView(type: EffectorType): { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh } {
     const group = new THREE.Group();
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-    const core = new THREE.Mesh(new THREE.SphereGeometry(1.0, 24, 24), coreMat);
-    group.add(core);
+    group.userData.pickable = true;
+    let coreColor: number;
+    let coreVisible = true;
+    let fragmentShader: string;
 
-    const ringMat = new THREE.ShaderMaterial({
+    switch (type) {
+      case 'blackhole':
+        coreColor = 0x000000;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0 || r < 0.55) discard;
+            float a = atan(c.y, c.x);
+            float swirl = sin(a * 5.0 - uTime * 4.0 + (1.0 - r) * 14.0);
+            float band = smoothstep(0.55, 0.62, r) * smoothstep(1.0, 0.92, r);
+            vec3 hot = vec3(1.0, 0.85, 0.55);
+            vec3 cool = vec3(1.0, 0.45, 0.15);
+            vec3 col = mix(cool, hot, swirl * 0.5 + 0.5);
+            gl_FragColor = vec4(col * (1.4 + swirl * 0.4), band * (0.85 + 0.15 * swirl));
+          }
+        `;
+        break;
+      case 'star':
+        coreColor = 0xffe89a;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0) discard;
+            float a = atan(c.y, c.x);
+            float rays = abs(sin(a * 8.0 + uTime * 0.5)) * 0.4 + 0.6;
+            float glow = exp(-r * 2.5) * rays;
+            vec3 col = mix(vec3(1.0, 0.5, 0.1), vec3(1.0, 0.95, 0.7), glow);
+            gl_FragColor = vec4(col * glow * 1.5, glow);
+          }
+        `;
+        break;
+      case 'repulsor':
+        coreColor = 0xff6644;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0) discard;
+            float wave = sin(r * 14.0 - uTime * 6.0);
+            float band = smoothstep(0.0, 1.0, wave) * smoothstep(1.0, 0.3, r);
+            vec3 col = vec3(1.0, 0.45, 0.25);
+            gl_FragColor = vec4(col, band * 0.7);
+          }
+        `;
+        break;
+      case 'freezer':
+        coreColor = 0xaaddff;
+        coreVisible = false;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0) discard;
+            float a = atan(c.y, c.x);
+            float spokes = abs(sin(a * 6.0 + uTime * 0.4)) * 0.5 + 0.5;
+            float crystal = smoothstep(1.0, 0.2, r) * spokes;
+            vec3 col = vec3(0.55, 0.85, 1.0);
+            gl_FragColor = vec4(col * (0.6 + crystal), crystal * 0.55);
+          }
+        `;
+        break;
+    }
+
+    if (coreVisible) {
+      const core = new THREE.Mesh(new THREE.SphereGeometry(type === 'blackhole' ? 1.0 : 0.7, 24, 24),
+        new THREE.MeshBasicMaterial({ color: coreColor }));
+      group.add(core);
+    }
+
+    const mat = new THREE.ShaderMaterial({
       side: THREE.DoubleSide,
       transparent: true,
       depthWrite: false,
@@ -400,30 +488,54 @@ export class Scene {
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
-      fragmentShader: `
-        varying vec2 vUv;
-        uniform float uTime;
-        void main() {
-          vec2 c = vUv * 2.0 - 1.0;
-          float r = length(c);
-          if (r > 1.0 || r < 0.55) discard;
-          float a = atan(c.y, c.x);
-          float swirl = sin(a * 5.0 - uTime * 4.0 + (1.0 - r) * 14.0);
-          float band = smoothstep(0.55, 0.62, r) * smoothstep(1.0, 0.92, r);
-          vec3 hot  = vec3(1.0, 0.85, 0.55);
-          vec3 cool = vec3(1.0, 0.45, 0.15);
-          vec3 col  = mix(cool, hot, swirl * 0.5 + 0.5);
-          float alpha = band * (0.85 + 0.15 * swirl);
-          gl_FragColor = vec4(col * (1.4 + swirl * 0.4), alpha);
-        }
-      `,
+      fragmentShader,
     });
-    const ringGeo = new THREE.PlaneGeometry(4.5, 4.5);
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    group.add(ring);
+    const aura = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), mat);
+    group.add(aura);
+
+    const ringGeo = new THREE.RingGeometry(1.6, 1.85, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x5499f7,
+      transparent: true,
+      opacity: 0.6,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const selectionRing = new THREE.Mesh(ringGeo, ringMat);
+    selectionRing.visible = false;
+    group.add(selectionRing);
 
     this.scene.add(group);
-    return { group, ringMat };
+    return { group, mat, selectionRing };
+  }
+
+  pickEffector(clientX: number, clientY: number, sim: Simulator): Effector | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Line = { threshold: 1 } as any;
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    let bestEff: Effector | null = null;
+    let bestT = Infinity;
+    for (const eff of sim.effectors) {
+      const center = new THREE.Vector3(eff.x, eff.y, eff.z);
+      const sphere = new THREE.Sphere(center, eff.radius * 1.2);
+      const hit = new THREE.Vector3();
+      if (raycaster.ray.intersectSphere(sphere, hit)) {
+        const t = raycaster.ray.origin.distanceTo(hit);
+        if (t < bestT) {
+          bestT = t;
+          bestEff = eff;
+        }
+      }
+    }
+    return bestEff;
+  }
+
+  setSelectedEffector(eff: Effector | null): void {
+    this.selectedEffector = eff;
   }
 
   worldFromScreen(clientX: number, clientY: number): [number, number, number] | null {

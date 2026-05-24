@@ -1,5 +1,5 @@
 import GUI from 'lil-gui';
-import { Simulator } from '../physics/Simulator';
+import { Effector, Simulator } from '../physics/Simulator';
 import { SPECIES } from '../physics/types';
 import { Scene } from '../render/Scene';
 import { Preset, PRESETS } from './presets';
@@ -34,6 +34,8 @@ export class Controls {
   private distributionControllers: Record<string, { setValue: (v: number) => void }> = {};
   private distribution: Record<string, number> = {};
   private suppressApply = false;
+  private selectedFolder: GUI | null = null;
+  private onDeleteEffector: ((eff: Effector) => void) | null = null;
   private subPresetState = {
     env: ENV_PRESETS[0].name,
     composition: COMPOSITION_PRESETS[0].name,
@@ -188,6 +190,42 @@ export class Controls {
 
   setTimeScale(scale: number): void {
     this.state.timeScale = scale;
+  }
+
+  setDeleteHandler(handler: (eff: Effector) => void): void {
+    this.onDeleteEffector = handler;
+  }
+
+  showSelectedEffector(eff: Effector | null): void {
+    if (this.selectedFolder) {
+      this.selectedFolder.destroy();
+      this.selectedFolder = null;
+    }
+    if (!eff) return;
+
+    const folder = this.gui.addFolder(`▸ Selected · ${eff.type}`);
+    folder.open();
+    folder.add(eff, 'x', -30, 30, 0.1).name('Position X').listen();
+    folder.add(eff, 'y', -30, 30, 0.1).name('Position Y').listen();
+    folder.add(eff, 'z', -30, 30, 0.1).name('Position Z').listen();
+    const radiusRange = eff.type === 'freezer' ? [0.3, 8] : [0.3, 5];
+    folder.add(eff, 'radius', radiusRange[0], radiusRange[1], 0.05).name('Radius').listen();
+    if (eff.type === 'freezer') {
+      folder.add(eff, 'strength', 0.5, 0.999, 0.001).name('Damping').listen();
+    } else {
+      folder.add(eff, 'strength', 1, 200, 1).name(eff.type === 'blackhole' || eff.type === 'star' ? 'Mass' : 'Strength').listen();
+    }
+    if (eff.type === 'blackhole' || eff.type === 'star') {
+      const vel = folder.addFolder('Velocity (initial kick)');
+      vel.add(eff, 'vx', -3, 3, 0.05).name('vx').listen();
+      vel.add(eff, 'vy', -3, 3, 0.05).name('vy').listen();
+      vel.add(eff, 'vz', -3, 3, 0.05).name('vz').listen();
+    }
+    if (eff.type === 'blackhole') {
+      folder.add(eff, 'consumed').name('Consumed').disable().listen();
+    }
+    folder.add({ remove: () => this.onDeleteEffector?.(eff) }, 'remove').name('🗑 Delete');
+    this.selectedFolder = folder;
   }
 
   getDistribution(): Record<string, number> {

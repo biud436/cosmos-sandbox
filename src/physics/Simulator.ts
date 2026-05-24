@@ -29,12 +29,18 @@ export interface MoleculeEntry {
   color: number;
 }
 
-export interface BlackHole {
+export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer';
+
+export interface Effector {
+  type: EffectorType;
   x: number;
   y: number;
   z: number;
-  mass: number;
+  vx: number;
+  vy: number;
+  vz: number;
   radius: number;
+  strength: number;
   consumed: number;
 }
 
@@ -70,8 +76,14 @@ export class Simulator {
   bondStiffness = 80;
   bondFormFactor = 1.2;
   bondBreakFactor = 3.0;
-  blackHoleG = 6;
-  readonly blackHoles: BlackHole[] = [];
+  blackHoleG = 3;
+  starG = 2;
+  starHeatRate = 0.4;
+  repulsorG = 4;
+  freezerDamp = 0.92;
+  effectorPairG = 0.6;
+  readonly effectors: Effector[] = [];
+  onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
   onFusion: ((event: FusionEvent) => void) | null = null;
 
@@ -145,7 +157,7 @@ export class Simulator {
     this.simTime = 0;
     this.bondLen = 0;
     this.bondCount.fill(0);
-    this.blackHoles.length = 0;
+    this.effectors.length = 0;
     const half = this.boxHalf * 0.9;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
@@ -223,7 +235,128 @@ export class Simulator {
 
     this.applyBoundary();
     this.applyThermostat(dt);
+    this.integrateEffectors(dt);
     this.simTime += dt;
+  }
+
+  private integrateEffectors(dt: number): void {
+    const list = this.effectors;
+    if (list.length === 0) return;
+    const G = this.effectorPairG;
+    const eps2 = 0.25;
+
+    const ax = new Float64Array(list.length);
+    const ay = new Float64Array(list.length);
+    const az = new Float64Array(list.length);
+
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!this.isMassive(a)) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (!this.isMassive(b)) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dz = b.z - a.z;
+        const r2 = dx * dx + dy * dy + dz * dz + eps2;
+        const invR = 1 / Math.sqrt(r2);
+        const base = G * invR * invR * invR;
+        const fa = base * b.strength;
+        const fb = base * a.strength;
+        ax[i] += fa * dx;
+        ay[i] += fa * dy;
+        az[i] += fa * dz;
+        ax[j] -= fb * dx;
+        ay[j] -= fb * dy;
+        az[j] -= fb * dz;
+      }
+    }
+
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!this.isMassive(e)) continue;
+      e.vx += ax[i] * dt;
+      e.vy += ay[i] * dt;
+      e.vz += az[i] * dt;
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+      e.z += e.vz * dt;
+    }
+
+    this.handleEffectorCollisions();
+  }
+
+  private handleEffectorCollisions(): void {
+    const removed = new Set<Effector>();
+    const list = this.effectors;
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (removed.has(a) || !this.isMassive(a)) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j];
+        if (removed.has(b) || !this.isMassive(b)) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dz = b.z - a.z;
+        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (a.type === 'blackhole' && b.type === 'blackhole') {
+          if (r < a.radius + b.radius) {
+            this.mergeBlackHoles(a, b);
+            removed.add(b);
+          }
+        } else if (a.type === 'blackhole' && b.type === 'star') {
+          if (r < a.radius) {
+            this.consumeStar(a, b);
+            removed.add(b);
+          }
+        } else if (a.type === 'star' && b.type === 'blackhole') {
+          if (r < b.radius) {
+            this.consumeStar(b, a);
+            removed.add(a);
+            break;
+          }
+        }
+      }
+    }
+    if (removed.size === 0) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (removed.has(list[i])) {
+        const e = list[i];
+        list.splice(i, 1);
+        this.onEffectorRemoved?.(e, e.type === 'star' ? 'consumed' : 'merged');
+      }
+    }
+  }
+
+  private mergeBlackHoles(a: Effector, b: Effector): void {
+    const ma = a.strength;
+    const mb = b.strength;
+    const total = ma + mb;
+    a.x = (a.x * ma + b.x * mb) / total;
+    a.y = (a.y * ma + b.y * mb) / total;
+    a.z = (a.z * ma + b.z * mb) / total;
+    a.vx = (a.vx * ma + b.vx * mb) / total;
+    a.vy = (a.vy * ma + b.vy * mb) / total;
+    a.vz = (a.vz * ma + b.vz * mb) / total;
+    a.strength = total;
+    a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
+    a.consumed += b.consumed;
+  }
+
+  private consumeStar(bh: Effector, star: Effector): void {
+    const ma = bh.strength;
+    const dm = star.strength * 0.6;
+    const total = ma + dm;
+    bh.x = (bh.x * ma + star.x * dm) / total;
+    bh.y = (bh.y * ma + star.y * dm) / total;
+    bh.z = (bh.z * ma + star.z * dm) / total;
+    bh.vx = (bh.vx * ma + star.vx * dm) / total;
+    bh.vy = (bh.vy * ma + star.vy * dm) / total;
+    bh.vz = (bh.vz * ma + star.vz * dm) / total;
+    bh.strength = total;
+    bh.radius = Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.4);
+    bh.consumed += 1;
   }
 
   private computeForces(): void {
@@ -308,45 +441,134 @@ export class Simulator {
 
     if (fusionCheck && this.fusionQueue.length > 0) this.processFusion();
 
-    if (this.blackHoles.length > 0) this.applyBlackHoles();
+    if (this.effectors.length > 0) this.applyEffectors();
   }
 
-  addBlackHole(x: number, y: number, z: number, mass = 80, radius = 1.2): void {
-    this.blackHoles.push({ x, y, z, mass, radius, consumed: 0 });
+  addEffector(type: EffectorType, x: number, y: number, z: number): Effector {
+    const presets: Record<EffectorType, { radius: number; strength: number }> = {
+      blackhole: { radius: 0.9, strength: 40 },
+      star:      { radius: 1.6, strength: 30 },
+      repulsor:  { radius: 1.5, strength: 60 },
+      freezer:   { radius: 3.0, strength: 0.92 },
+    };
+    const p = presets[type];
+    const e: Effector = { type, x, y, z, vx: 0, vy: 0, vz: 0, radius: p.radius, strength: p.strength, consumed: 0 };
+    this.effectors.push(e);
+    return e;
   }
 
-  clearBlackHoles(): void {
-    this.blackHoles.length = 0;
+  clearEffectors(): void {
+    for (const e of this.effectors) this.onEffectorRemoved?.(e, 'manual');
+    this.effectors.length = 0;
   }
 
-  private applyBlackHoles(): void {
-    const G = this.blackHoleG;
-    const eps2 = 0.05;
+  removeEffector(target: Effector): void {
+    const idx = this.effectors.indexOf(target);
+    if (idx >= 0) {
+      this.effectors.splice(idx, 1);
+      this.onEffectorRemoved?.(target, 'manual');
+    }
+  }
+
+  private isMassive(e: Effector): boolean {
+    return e.type === 'blackhole' || e.type === 'star';
+  }
+
+  private applyEffectors(): void {
     const consume = new Set<number>();
-    for (const bh of this.blackHoles) {
-      const r2horizon = bh.radius * bh.radius;
-      for (let i = 0; i < this.count; i++) {
-        const dx = bh.x - this.positions[i * 3 + 0];
-        const dy = bh.y - this.positions[i * 3 + 1];
-        const dz = bh.z - this.positions[i * 3 + 2];
-        const r2 = dx * dx + dy * dy + dz * dz;
-        if (r2 < r2horizon) {
-          consume.add(i);
-          bh.consumed++;
-          continue;
-        }
-        const m = SPECIES[this.species[i]].mass;
-        const invR = 1 / Math.sqrt(r2 + eps2);
-        const f = G * bh.mass * m * invR * invR * invR;
-        this.forces[i * 3 + 0] += f * dx;
-        this.forces[i * 3 + 1] += f * dy;
-        this.forces[i * 3 + 2] += f * dz;
+    for (const e of this.effectors) {
+      switch (e.type) {
+        case 'blackhole': this.applyBlackHole(e, consume); break;
+        case 'star':      this.applyStar(e); break;
+        case 'repulsor':  this.applyRepulsor(e); break;
+        case 'freezer':   this.applyFreezer(e); break;
       }
     }
-    if (consume.size === 0) return;
-    const sorted = Array.from(consume).sort((a, b) => b - a);
-    for (const idx of sorted) {
-      if (idx < this.count) this.removeParticle(idx);
+    if (consume.size > 0) {
+      const sorted = Array.from(consume).sort((a, b) => b - a);
+      for (const idx of sorted) if (idx < this.count) this.removeParticle(idx);
+    }
+  }
+
+  private applyBlackHole(e: Effector, consume: Set<number>): void {
+    const G = this.blackHoleG;
+    const eps2 = 0.05;
+    const r2horizon = e.radius * e.radius;
+    for (let i = 0; i < this.count; i++) {
+      const dx = e.x - this.positions[i * 3 + 0];
+      const dy = e.y - this.positions[i * 3 + 1];
+      const dz = e.z - this.positions[i * 3 + 2];
+      const r2 = dx * dx + dy * dy + dz * dz;
+      if (r2 < r2horizon) {
+        consume.add(i);
+        e.consumed++;
+        continue;
+      }
+      const m = SPECIES[this.species[i]].mass;
+      const invR = 1 / Math.sqrt(r2 + eps2);
+      const f = G * e.strength * m * invR * invR * invR;
+      this.forces[i * 3 + 0] += f * dx;
+      this.forces[i * 3 + 1] += f * dy;
+      this.forces[i * 3 + 2] += f * dz;
+    }
+  }
+
+  private applyStar(e: Effector): void {
+    const G = this.starG;
+    const eps2 = 0.5;
+    const heatR2 = (e.radius * 3) * (e.radius * 3);
+    const heatRate = this.starHeatRate;
+    for (let i = 0; i < this.count; i++) {
+      const dx = e.x - this.positions[i * 3 + 0];
+      const dy = e.y - this.positions[i * 3 + 1];
+      const dz = e.z - this.positions[i * 3 + 2];
+      const r2 = dx * dx + dy * dy + dz * dz;
+      const m = SPECIES[this.species[i]].mass;
+      const invR = 1 / Math.sqrt(r2 + eps2);
+      const f = G * e.strength * m * invR * invR * invR;
+      this.forces[i * 3 + 0] += f * dx;
+      this.forces[i * 3 + 1] += f * dy;
+      this.forces[i * 3 + 2] += f * dz;
+      if (r2 < heatR2) {
+        const boost = 1 + heatRate * 0.01;
+        this.velocities[i * 3 + 0] *= boost;
+        this.velocities[i * 3 + 1] *= boost;
+        this.velocities[i * 3 + 2] *= boost;
+      }
+    }
+  }
+
+  private applyRepulsor(e: Effector): void {
+    const G = this.repulsorG;
+    const eps2 = 0.3;
+    const cutoff2 = (e.radius * 4) * (e.radius * 4);
+    for (let i = 0; i < this.count; i++) {
+      const dx = this.positions[i * 3 + 0] - e.x;
+      const dy = this.positions[i * 3 + 1] - e.y;
+      const dz = this.positions[i * 3 + 2] - e.z;
+      const r2 = dx * dx + dy * dy + dz * dz;
+      if (r2 > cutoff2) continue;
+      const m = SPECIES[this.species[i]].mass;
+      const invR = 1 / Math.sqrt(r2 + eps2);
+      const f = G * e.strength * m * invR * invR * invR;
+      this.forces[i * 3 + 0] += f * dx;
+      this.forces[i * 3 + 1] += f * dy;
+      this.forces[i * 3 + 2] += f * dz;
+    }
+  }
+
+  private applyFreezer(e: Effector): void {
+    const r2 = e.radius * e.radius;
+    const damp = e.strength;
+    for (let i = 0; i < this.count; i++) {
+      const dx = e.x - this.positions[i * 3 + 0];
+      const dy = e.y - this.positions[i * 3 + 1];
+      const dz = e.z - this.positions[i * 3 + 2];
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > r2) continue;
+      this.velocities[i * 3 + 0] *= damp;
+      this.velocities[i * 3 + 1] *= damp;
+      this.velocities[i * 3 + 2] *= damp;
     }
   }
 

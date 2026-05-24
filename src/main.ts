@@ -66,15 +66,50 @@ layout.bindToolbar({
 new Tools({
   isInsideViewport: (x, y) => scene.isInsideViewport(x, y),
   worldFromScreen: (x, y) => scene.worldFromScreen(x, y),
-  onPlaceBlackHole: (pos) => {
-    sim.addBlackHole(pos[0], pos[1], pos[2]);
-    layout.log(`Black hole placed @ (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)}, ${pos[2].toFixed(1)})`, 'event');
+  onPlace: (type, pos) => {
+    const eff = sim.addEffector(type, pos[0], pos[1], pos[2]);
+    scene.setSelectedEffector(eff);
+    controls.showSelectedEffector(eff);
+    layout.log(`${type} placed @ (${pos[0].toFixed(1)}, ${pos[1].toFixed(1)}, ${pos[2].toFixed(1)})`, 'event');
   },
-  onClearBlackHoles: () => {
-    sim.clearBlackHoles();
-    layout.log('Black holes cleared.');
+  onClearAll: () => {
+    sim.clearEffectors();
+    scene.setSelectedEffector(null);
+    controls.showSelectedEffector(null);
+    layout.log('Effectors cleared.');
   },
   setViewportDropHighlight: (active) => layout.setDropHighlight(active),
+});
+
+controls.setDeleteHandler((eff) => {
+  sim.removeEffector(eff);
+});
+
+sim.onEffectorRemoved = (eff, reason) => {
+  scene.setSelectedEffector(null);
+  controls.showSelectedEffector(null);
+  if (reason === 'merged')   layout.log(`Black hole merged · M=${eff.strength.toFixed(0)}`, 'event');
+  if (reason === 'consumed') layout.log(`Star consumed by black hole`, 'event');
+  if (reason === 'manual')   layout.log(`${eff.type} removed`);
+};
+
+const rendererEl = scene.renderer.domElement;
+let downX = 0;
+let downY = 0;
+let downTime = 0;
+rendererEl.addEventListener('pointerdown', (e) => {
+  downX = e.clientX;
+  downY = e.clientY;
+  downTime = performance.now();
+});
+rendererEl.addEventListener('pointerup', (e) => {
+  const dx = e.clientX - downX;
+  const dy = e.clientY - downY;
+  const dt = performance.now() - downTime;
+  if (dx * dx + dy * dy > 16 || dt > 400) return;
+  const picked = scene.pickEffector(e.clientX, e.clientY, sim);
+  scene.setSelectedEffector(picked);
+  controls.showSelectedEffector(picked);
 });
 
 layout.log('Cosmos sandbox ready.');
