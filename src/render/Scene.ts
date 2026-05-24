@@ -445,11 +445,11 @@ export class Scene {
         const r = ((sp.color >> 16) & 0xff) / 255;
         const g = ((sp.color >> 8) & 0xff) / 255;
         const b = (sp.color & 0xff) / 255;
-        const dim = isDM ? 0.35 : 1.0;
+        const dim = isDM ? 0.55 : 1.0;
         this.gasColors[write * 3 + 0] = r * dim;
         this.gasColors[write * 3 + 1] = g * dim;
         this.gasColors[write * 3 + 2] = b * dim;
-        this.gasSizes[write] = sp.sigma * (isDM ? 5.0 : 4.5);
+        this.gasSizes[write] = sp.sigma * (isDM ? 5.8 : 4.5);
         write++;
       }
       this.gasGeom.setDrawRange(0, write);

@@ -40,7 +40,7 @@ export const PRESETS: Preset[] = [
     selfGravity: 1.6,
     bondingEnabled: true,
     fusionEnabled: false,
-    distribution: { H: 2400, He: 360, DM: 1800 },
+    distribution: { H: 2400, He: 360, DM: 2400 },
     renderMode: 'gas',
     showEnvironment: false,
     initialTimeScale: 1,
