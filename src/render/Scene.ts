@@ -361,9 +361,9 @@ export class Scene {
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geom.setDrawRange(0, 0);
     const mat = new THREE.LineBasicMaterial({
-      color: 0xffffff,
+      color: 0x6688ff,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.22,
       depthWrite: false,
     });
     const lines = new THREE.LineSegments(geom, mat);

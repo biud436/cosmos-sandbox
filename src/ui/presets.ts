@@ -39,7 +39,7 @@ export const PRESETS: Preset[] = [
     temperatureK: 30,
     gravity: 0,
     windX: 0,
-    selfGravity: 1.6,
+    selfGravity: 0.9,
     bondingEnabled: true,
     fusionEnabled: false,
     distribution: { H: 2400, He: 360, DM: 2400 },
@@ -49,9 +49,9 @@ export const PRESETS: Preset[] = [
     yearsPerUnit: 30_000_000,
     thermostatCoolOnly: true,
     initialPattern: 'clumpy',
-    initialClumpCount: 8,
-    initialClumpSpread: 0.07,
-    initialBoundingRadius: 0.20,
+    initialClumpCount: 14,
+    initialClumpSpread: 0.035,
+    initialBoundingRadius: 0.85,
     initialVelocityScale: 0.15,
     hubbleRate: 0.12,
     hubbleDecay: 0.4,
@@ -86,9 +86,9 @@ export const PRESETS: Preset[] = [
         },
       },
       {
-        time: 12.0,
+        time: 5.0,
         name: 'First Stars · Population III',
-        description: '암흑 시대의 끝. 가스가 응집되어 최초의 별이 일제히 탄생합니다.',
+        description: '암흑 시대의 끝. 암흑물질 헤일로 안의 가스가 응집되어 최초의 별이 탄생합니다.',
         action: (sim) => {
           sim.starFormationEnabled = true;
           sim.starFormationRadius = 2.5;
@@ -97,13 +97,13 @@ export const PRESETS: Preset[] = [
         },
       },
       {
-        time: 18.0,
+        time: 10.0,
         name: 'Galaxy Assembly',
         description: '여러 은하가 형성되며, 각 은하 중심에 SMBH 씨앗이 생깁니다.',
         action: (sim) => {
           sim.seedGalaxies({
-            galaxyCount: 8,
-            starsPerGalaxy: 28,
+            galaxyCount: 14,
+            starsPerGalaxy: 24,
             radius: 5.0,
             starClusterSize: 4,
             orbitalSpeed: 1.05,
@@ -113,15 +113,15 @@ export const PRESETS: Preset[] = [
         },
       },
       {
-        time: 28.0,
+        time: 18.0,
         name: 'Stellar Baby Boom',
         description: '남은 가스가 응집해 별이 폭발적으로 더 탄생합니다.',
         action: (sim) => {
-          sim.forceFormStars(80, 2.0, 4);
+          sim.forceFormStars(120, 2.0, 4);
         },
       },
       {
-        time: 40.0,
+        time: 28.0,
         name: 'Supermassive Growth',
         description: '가장 큰 은하의 중심 BH가 별과 가스를 빨아들이며 급성장합니다.',
         action: (sim) => {
