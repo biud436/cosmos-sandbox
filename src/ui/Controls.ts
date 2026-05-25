@@ -152,11 +152,12 @@ export class Controls {
   private buildVisibilityFolder(): void {
     const folder = this.gui.addFolder('시야 — 실시간');
     this.markFolder(folder, 'runtime');
-    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies' | 'nebulae'; label: string }[] = [
+    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies' | 'nebulae' | 'neutronStars'; label: string }[] = [
       { key: 'particles', label: '입자' },
       { key: 'bonds', label: '결합' },
       { key: 'nebulae', label: '성운' },
       { key: 'stars', label: '별' },
+      { key: 'neutronStars', label: '중성자별' },
       { key: 'blackholes', label: '블랙홀' },
       { key: 'galaxies', label: '은하 헤일로' },
       { key: 'repulsors', label: '반발자' },

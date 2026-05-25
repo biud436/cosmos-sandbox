@@ -5,7 +5,7 @@ import { SPECIES } from './types';
 import { ejectSupernovaParticles } from './starFormation';
 
 export function isMassive(e: Effector): boolean {
-  return e.type === 'blackhole' || e.type === 'star';
+  return e.type === 'blackhole' || e.type === 'star' || e.type === 'neutron_star';
 }
 
 export function integrateEffectors(sim: Simulator, dt: number): void {
@@ -147,6 +147,29 @@ function handleEffectorCollisions(sim: Simulator): void {
           removed.add(b);
           if (collapsed) removed.add(a);
         }
+
+      } else if (
+        (a.type === 'blackhole' && b.type === 'neutron_star') ||
+        (a.type === 'neutron_star' && b.type === 'blackhole')
+      ) {
+        // BH tidally disrupts and swallows NS
+        const bh = a.type === 'blackhole' ? a : b;
+        const ns = a.type === 'blackhole' ? b : a;
+        if (r < bh.radius * sim.starConsumeRadiusMul) {
+          consumeStar(bh, ns);
+          removed.add(ns);
+          if (ns === a) break;
+        }
+
+      } else if (a.type === 'neutron_star' && b.type === 'neutron_star') {
+        // NS-NS merger → kilonova → new BH (every successful merger collapses
+        // since the combined mass exceeds the Tolman-Oppenheimer-Volkoff limit).
+        if (r < (a.radius + b.radius) * 1.5) {
+          mergeNeutronStars(sim, a, b);
+          removed.add(a);
+          removed.add(b);
+          break;
+        }
       }
     }
   }
@@ -217,6 +240,33 @@ function mergeStars(sim: Simulator, a: Effector, b: Effector): boolean {
   a.bornAt = sim.simTime;
   sim.onStellarMerger?.([mx, my, mz], total);
   return false;
+}
+
+// Kilonova: two NSes inspiral via GW emission, merge, exceed TOV limit and
+// collapse to a BH. Small fraction of mass ejected as r-process material
+// (in our sim this gas just adds to ISM metal enrichment).
+function mergeNeutronStars(sim: Simulator, a: Effector, b: Effector): void {
+  const ma = a.strength;
+  const mb = b.strength;
+  const total = ma + mb;
+  const mx = (a.x * ma + b.x * mb) / total;
+  const my = (a.y * ma + b.y * mb) / total;
+  const mz = (a.z * ma + b.z * mb) / total;
+  const vx = (a.vx * ma + b.vx * mb) / total;
+  const vy = (a.vy * ma + b.vy * mb) / total;
+  const vz = (a.vz * ma + b.vz * mb) / total;
+
+  // Small ejecta (heavy-element r-process material)
+  ejectSupernovaParticles(sim, mx, my, mz, vx, vy, vz, total * 0.05);
+
+  const bh = sim.addEffector('blackhole', mx, my, mz);
+  bh.vx = vx;
+  bh.vy = vy;
+  bh.vz = vz;
+  bh.strength = total * 0.95;
+  bh.radius = Math.max(0.45, Math.cbrt(bh.strength) * 0.18);
+
+  sim.onSupernova?.([mx, my, mz], total);
 }
 
 function consumeStar(bh: Effector, star: Effector): void {

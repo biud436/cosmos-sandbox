@@ -52,7 +52,7 @@ export interface CosmicEvent {
   action: (sim: Simulator) => void;
 }
 
-export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer' | 'nebula';
+export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer' | 'nebula' | 'neutron_star';
 
 export interface Effector {
   type: EffectorType;
@@ -167,6 +167,9 @@ export class Simulator {
   // such a remnant lives as a luminous blue variant before SN. This decouples
   // the merger pathway from the single-star death pathway.
   mergerSupernovaThreshold = 200;
+  // Mass window for neutron-star formation. Below the SN threshold a star
+  // dies quietly; in [SN, NS_upper) it leaves a NS; above that → BH.
+  neutronStarUpperMass = 100;
   // Natal cocoon: newly-born stars don't merge with each other for this many
   // sim sec. Prevents same-frame multi-star spawn → instant BH cascade.
   stellarMergerCooldown = 1.5;
@@ -208,6 +211,7 @@ export class Simulator {
   private firedEventCount = 0;
   starCounter = 0;
   bhCounter = 0;
+  nsCounter = 0;
 
   private grid: SpatialGrid;
   bh: BarnesHut;
@@ -301,6 +305,7 @@ export class Simulator {
     this.firedEvents = [];
     this.starCounter = 0;
     this.bhCounter = 0;
+    this.nsCounter = 0;
     const half = this.boxHalf * this.initialBoundingRadius;
     const targetT = this.targetTemperatureK / T_REDUCED_TO_KELVIN;
 
@@ -650,11 +655,12 @@ export class Simulator {
 
   addEffector(type: EffectorType, x: number, y: number, z: number): Effector {
     const presets: Record<EffectorType, { radius: number; strength: number }> = {
-      blackhole: { radius: 0.35, strength: 25 },
-      star:      { radius: 1.6, strength: 30 },
-      repulsor:  { radius: 1.5, strength: 60 },
-      freezer:   { radius: 3.0, strength: 0.92 },
-      nebula:    { radius: 8.0, strength: 0 },
+      blackhole:    { radius: 0.35, strength: 25 },
+      star:         { radius: 1.6,  strength: 30 },
+      repulsor:     { radius: 1.5,  strength: 60 },
+      freezer:      { radius: 3.0,  strength: 0.92 },
+      nebula:       { radius: 8.0,  strength: 0 },
+      neutron_star: { radius: 0.45, strength: 20 },
     };
     const p = presets[type];
     const e: Effector = {
@@ -666,6 +672,7 @@ export class Simulator {
     if (type === 'star') e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
     else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
     else if (type === 'nebula') e.name = `☁ N-${String(++this.nebulaCounter).padStart(3, '0')}`;
+    else if (type === 'neutron_star') e.name = `⚪ NS-${String(++this.nsCounter).padStart(3, '0')}`;
     this.effectors.push(e);
     return e;
   }

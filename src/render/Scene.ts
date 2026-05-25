@@ -57,6 +57,7 @@ export class Scene {
     orbits: false,
     galaxies: true,
     nebulae: true,
+    neutronStars: true,
   };
   private galaxyHalos = new Map<string, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
   private selectedOrbitLines: THREE.LineSegments | null = null;
@@ -717,6 +718,7 @@ export class Scene {
       case 'repulsor': return 'repulsors';
       case 'freezer': return 'freezers';
       case 'nebula': return 'nebulae';
+      case 'neutron_star': return 'neutronStars';
     }
   }
 
@@ -1194,6 +1196,7 @@ export class Scene {
       const scaleBoost =
         eff.type === 'star' ? 1.25 :
         eff.type === 'nebula' ? 0.5 :
+        eff.type === 'neutron_star' ? 2.0 :
         1.0;
       const visualR = eff.radius * scaleBoost * 3.0;
       this.tmpSphere.center.set(eff.x, eff.y, eff.z);
@@ -1385,6 +1388,35 @@ export class Scene {
             float crystal = smoothstep(1.0, 0.2, r) * spokes;
             vec3 col = vec3(0.55, 0.85, 1.0);
             gl_FragColor = vec4(col * (0.6 + crystal), crystal * 0.55);
+          }
+        `;
+        break;
+      case 'neutron_star':
+        coreColor = 0xcceeff;
+        coreVisible = false;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          uniform float uRedshift;
+
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0) discard;
+
+            // Sharp tiny point with a pulsar-like beat (rapid pulse mimics
+            // millisecond rotation of a real NS).
+            float pulse = 0.6 + 0.4 * sin(uTime * 7.5);
+            float core = exp(-r * 14.0) * pulse;
+            float halo = exp(-r * 2.8) * 0.28;
+            float glow = core + halo;
+
+            vec3 col = vec3(0.82, 0.94, 1.0);
+            vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
+            col *= tint;
+
+            float bright = 1.0 - 0.25 * uRedshift;
+            gl_FragColor = vec4(col * (0.55 + glow * 1.8) * bright, clamp(glow, 0.0, 1.0));
           }
         `;
         break;

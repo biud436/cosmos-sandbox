@@ -491,53 +491,72 @@ export function checkStellarLifetimes(sim: Simulator): void {
   for (const star of dying) endOfStarLife(sim, star);
 }
 
-// Three death pathways inspired by real stellar evolution, adapted to the
+// Four death pathways inspired by real stellar evolution, adapted to the
 // compressed sim scale (M in our units, not solar masses):
-//   M <  60:   quiet death — envelope ejected, no compact remnant (proxy
-//              for low-mass stars + white dwarfs that we don't track).
-//   60–150:    core-collapse SN — leaves a stellar-mass BH.
-//   150–250:   pair-instability SN — FULL disruption, no remnant.
-//              Real M_PI window is ~140–260 M⊙; the gap is what produces
-//              the observed "BH mass gap" between ~50 and 130 M⊙.
-//   M ≥ 250:   direct collapse to a more massive BH — minimal ejecta,
-//              most mass enters the BH (mirrors how Pop III hypermassives
-//              are thought to seed early supermassive BHs).
+//   M <  60:           quiet death — envelope ejected, no compact remnant
+//                      (proxy for low-mass stars + white dwarfs).
+//   60–neutronStarUpper:  Type II SN → NEUTRON STAR (most mass ejected,
+//                      dense ~1–2 M⊙ remnant). Maps to real 8–25 M⊙ band.
+//   neutronStarUpper–150: Type II SN → stellar-mass BH.
+//   150–250:           pair-instability SN — FULL disruption, no remnant.
+//                      Real M_PI window is ~140–260 M⊙; this is what creates
+//                      the observed "BH mass gap" between ~50 and 130 M⊙.
+//   M ≥ 250:           direct collapse to a heavy BH — minimal ejecta. The
+//                      primary channel for Pop III SMBH seeds.
 function endOfStarLife(sim: Simulator, star: Effector): void {
   const idx = sim.effectors.indexOf(star);
   if (idx < 0) return;
   const M = star.strength;
   const snThreshold = sim.supernovaMassThreshold;
+  const nsUpper = sim.neutronStarUpperMass;
   const pairInstabilityLo = 150;
   const directCollapseLo = 250;
 
   if (M < snThreshold) {
-    // Quiet death: shed envelope as gas, no remnant
     ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * 0.55);
+
+  } else if (M < nsUpper) {
+    // Type II SN → neutron star. Most mass ejected, compact remnant left.
+    const ejectaFraction = 0.80;
+    ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * ejectaFraction);
+
+    const ns = sim.addEffector('neutron_star', star.x, star.y, star.z);
+    ns.vx = star.vx; ns.vy = star.vy; ns.vz = star.vz;
+    ns.strength = M * (1 - ejectaFraction);
+    ns.radius = 0.45;
+
+    sim.onSupernova?.([star.x, star.y, star.z], M);
+
   } else if (M < pairInstabilityLo) {
     // Type II SN → stellar-mass BH
     const ejectaFraction = 0.55;
     ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * ejectaFraction);
+
     const bh = sim.addEffector('blackhole', star.x, star.y, star.z);
     bh.vx = star.vx; bh.vy = star.vy; bh.vz = star.vz;
     bh.strength = M * (1 - ejectaFraction);
     bh.radius = Math.max(0.5, Math.cbrt(bh.strength) * 0.18);
+
     sim.onSupernova?.([star.x, star.y, star.z], M);
+
   } else if (M < directCollapseLo) {
-    // Pair-instability SN: total disruption — NO remnant. Generates a lot
-    // of ejecta and removes the star entirely from the BH-formation budget.
+    // Pair-instability SN: total disruption, NO remnant
     ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * 0.95);
     sim.onSupernova?.([star.x, star.y, star.z], M);
+
   } else {
-    // Direct collapse: most mass goes into BH, minimal ejecta. This is the
-    // primary channel for seeding heavy BHs in the early universe.
+    // Direct collapse: most mass goes into BH, minimal ejecta
     const ejectaFraction = 0.15;
     ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * ejectaFraction);
+
     const bh = sim.addEffector('blackhole', star.x, star.y, star.z);
     bh.vx = star.vx; bh.vy = star.vy; bh.vz = star.vz;
     bh.strength = M * (1 - ejectaFraction);
     bh.radius = Math.max(0.7, Math.cbrt(bh.strength) * 0.20);
+
     sim.onSupernova?.([star.x, star.y, star.z], M);
   }
+
   sim.effectors.splice(idx, 1);
   sim.onEffectorRemoved?.(star, 'consumed');
 }
