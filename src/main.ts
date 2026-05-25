@@ -2,7 +2,7 @@ import { Effector, Simulator } from './physics/Simulator';
 import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
-import { generatePlanetSystem } from './ship/PlanetSystem';
+import { generatePlanetSystem, planetClassLabel } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
 import { ShipHUD } from './ship/ShipHUD';
 import { ShipMenu } from './ship/ShipMenu';
@@ -86,7 +86,8 @@ const modeManager = new ModeManager({
 const ship = new ShipController({
   camera: scene.camera,
   domElement: scene.renderer.domElement,
-  maxSpeed: BOX_HALF * 0.45, // cross the (unexpanded) box in ~4s at cruise
+  // No maxSpeed override — use ShipController's sub-light default (0.2c
+  // cruise, 0.8c with boost). Interstellar travel is expected to need warp.
 });
 
 const shipHUD = new ShipHUD(viewport);
@@ -326,10 +327,11 @@ rendererEl.addEventListener('pointerup', (e) => {
 
 layout.log('Cosmos sandbox ready.');
 
-// Visit radius is a function of star physical radius: get close enough that
-// the planets feel meaningfully arranged around the star. The ship's max
-// cruise speed is BOX_HALF*0.45 so this radius is reachable in a few seconds.
-const VISIT_RADIUS_MULT = 14;
+// Visit radius is a function of star physical radius. Tuned so the outer
+// planet (orbit ~innerR × 3-6, innerR ~ eff.radius × 4-7) falls inside the
+// detection sphere — otherwise the player would fly past the system without
+// any planets materializing. Roughly ~30× star radius covers a full system.
+const VISIT_RADIUS_MULT = 32;
 /** Half-angle of the reticle's targeting cone, in radians (~6°). */
 const TARGET_CONE_COS = Math.cos(0.10);
 
@@ -338,8 +340,28 @@ interface ReticleTarget {
   label: string;
   getPosition: () => THREE.Vector3;
   radius: number;
+  color?: [number, number, number];
+  details: { k: string; v: string }[];
 }
 let reticleTarget: ReticleTarget | null = null;
+
+function starTypeLabel(type: string): string {
+  switch (type) {
+    case 'star':         return '항성';
+    case 'neutron_star': return '중성자별';
+    case 'blackhole':    return '블랙홀';
+    default:             return type;
+  }
+}
+
+function spectralLabel(mass: number): string {
+  if (mass < 12)  return 'M (적색 왜성)';
+  if (mass < 22)  return 'K (주황)';
+  if (mass < 40)  return 'G (태양형)';
+  if (mass < 70)  return 'F/A (백색)';
+  if (mass < 130) return 'B (청백)';
+  return            'O (청색 거성)';
+}
 
 function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | null {
   const forward = new THREE.Vector3();
@@ -370,7 +392,7 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
       const score = cos - d * 0.0001;
       if (score > bestScore) {
         bestScore = score;
-        const planetIdx = i; const sysCenter = view; // capture
+        const sysCenter = view; // capture for moving-host tracking
         best = {
           kind: 'planet',
           label: planet.name,
@@ -384,8 +406,15 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
             return new THREE.Vector3(c.x + x, c.y + z * sI, c.z + z * cI);
           },
           radius: planet.visualRadius,
+          color: planet.color,
+          details: [
+            { k: '분류',  v: planetClassLabel(planet.planetClass) },
+            { k: '모성',  v: view.planetSystem.starName },
+            { k: '궤도',  v: `${planet.orbitRadius.toFixed(1)} u` },
+            { k: '반경',  v: `${planet.visualRadius.toFixed(2)} u` },
+            { k: '주기',  v: `${planet.periodSec.toFixed(1)} s` },
+          ],
         };
-        void planetIdx;
       }
     }
   }
@@ -402,11 +431,23 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
     if (score > bestScore) {
       bestScore = score;
       const captured = eff;
+      const details: { k: string; v: string }[] = [
+        { k: '종류', v: starTypeLabel(captured.type) },
+        { k: '질량', v: `${captured.strength.toFixed(0)}` },
+      ];
+      if (captured.type === 'star') {
+        details.push({ k: '분광형', v: spectralLabel(captured.strength) });
+        if (captured.metallicity !== undefined) {
+          details.push({ k: '금속성', v: `Z=${captured.metallicity.toFixed(3)}` });
+        }
+      }
+      details.push({ k: '형성t', v: captured.bornAt.toFixed(1) });
       best = {
         kind: 'star',
         label: captured.name ?? `${captured.type}-${captured.id}`,
         getPosition: () => new THREE.Vector3(captured.x, captured.y, captured.z),
         radius: captured.radius,
+        details,
       };
     }
   }

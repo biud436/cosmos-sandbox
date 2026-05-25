@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 
+// Conceptual lightspeed in sim units / second. The simulation has no honest
+// scale — but giving the ship a "c" reference makes the HUD's "0.42 c"
+// readout meaningful and forces sub-light cruise to feel like you're
+// actually moving through interstellar distances (and motivates warp for
+// crossing them in a session). Light crosses BOX_HALF (150 units) in 2.5s.
+export const LIGHTSPEED_UNITS = 60;
+
 // 6-DOF spaceship controller. Borrows a Three.js PerspectiveCamera while
 // active and drives it directly via quaternion.
 //
@@ -43,6 +50,8 @@ export interface ShipState {
   throttleNormalized: number;
   /** Magnitude of velocity, units/sec. */
   speed: number;
+  /** speed / LIGHTSPEED_UNITS — the "x c" readout on the HUD. */
+  speedC: number;
   boosting: boolean;
 }
 
@@ -110,7 +119,8 @@ export class ShipController {
   constructor(opts: ShipControllerOptions) {
     this.camera = opts.camera;
     this.dom = opts.domElement;
-    this.maxSpeed = opts.maxSpeed ?? 80;
+    // Default cruise: 20% of lightspeed. Shift boost (×4) saturates at 0.8c.
+    this.maxSpeed = opts.maxSpeed ?? 0.2 * LIGHTSPEED_UNITS;
     const start = opts.initialPosition ?? this.camera.position;
     this.position.copy(start);
     this.orientation.copy(this.camera.quaternion);
@@ -277,8 +287,10 @@ export class ShipController {
           const lookQ = new THREE.Quaternion().setFromRotationMatrix(lookM);
           this.orientation.slerp(lookQ, Math.min(1, dt * 3.5));
 
-          // Speed plan: cruise, then ease into the standoff radius.
-          const cruise = this.maxSpeed * 2.2;
+          // Speed plan: cruise close to lightspeed for autopilot, then ease
+          // into the standoff radius. We allow autopilot to brush against c
+          // since it's a deliberate "travel to entry" action.
+          const cruise = 0.8 * LIGHTSPEED_UNITS;
           const ease = Math.min(1, (dist - this.autoStandoff) / (this.autoStandoff * 4));
           const desiredSpeed = cruise * ease + 2 * (1 - ease); // floor of 2 u/s near arrival
           const dir = toTarget.normalize();
@@ -378,6 +390,7 @@ export class ShipController {
       throttleInput: (this.keys.has('w') ? 1 : 0) - (this.keys.has('s') ? 1 : 0),
       throttleNormalized: Math.min(1, speed / cap),
       speed,
+      speedC: speed / LIGHTSPEED_UNITS,
       boosting,
     };
   }

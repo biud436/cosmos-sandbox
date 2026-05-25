@@ -7,6 +7,10 @@ export interface HUDTarget {
   label: string;
   getPosition: () => THREE.Vector3;
   radius: number;
+  /** Optional swatch color for the info card. */
+  color?: [number, number, number];
+  /** Compact key/value lines shown in the floating info card. */
+  details: { k: string; v: string }[];
 }
 
 // HTML overlay shown only while the spaceship mode is active. Renders
@@ -27,6 +31,7 @@ export class ShipHUD {
   private readonly faBadge: HTMLElement;
   private readonly orbitBadge: HTMLElement;
   private readonly targetBracket: HTMLElement;
+  private readonly targetInfo: HTMLElement;
 
   private visible_ = false;
 
@@ -57,6 +62,7 @@ export class ShipHUD {
       </div>
       <div class="ship-reticle"></div>
       <div class="ship-target-bracket" id="ship-target-bracket" style="display:none"></div>
+      <div class="ship-target-info" id="ship-target-info" style="display:none"></div>
     `;
     container.appendChild(this.root);
     this.posEl = this.root.querySelector('#ship-pos') as HTMLElement;
@@ -71,6 +77,7 @@ export class ShipHUD {
     this.faBadge = this.root.querySelector('#ship-badge-fa') as HTMLElement;
     this.orbitBadge = this.root.querySelector('#ship-badge-orbit') as HTMLElement;
     this.targetBracket = this.root.querySelector('#ship-target-bracket') as HTMLElement;
+    this.targetInfo = this.root.querySelector('#ship-target-info') as HTMLElement;
 
     this.injectStyles();
     this.setVisible(false);
@@ -99,7 +106,7 @@ export class ShipHUD {
     this.posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
     const v = state.velocity;
     this.velEl.textContent = `${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)}`;
-    this.spdEl.textContent = `${state.speed.toFixed(2)} u/s${state.boosting ? ' · BOOST' : ''}`;
+    this.spdEl.innerHTML = `${state.speed.toFixed(2)} u/s · <b>${state.speedC.toFixed(3)} c</b>${state.boosting ? ' · BOOST' : ''}`;
     this.thrFill.style.width = `${(state.throttleNormalized * 100).toFixed(1)}%`;
     if (state.boosting) this.thrFill.classList.add('boost');
     else this.thrFill.classList.remove('boost');
@@ -115,10 +122,11 @@ export class ShipHUD {
       const tp = target.getPosition();
       const dist = tp.distanceTo(state.position);
       this.tgtEl.innerHTML = `<b>${escapeText(target.label)}</b> · ${dist.toFixed(1)} u · <span class="ship-key">G</span> 궤도`;
-      this.updateTargetBracket(target, camera);
+      this.updateTargetBracket(target, camera, dist);
     } else {
       this.tgtEl.textContent = '레티클을 별/행성에 맞추세요';
       this.targetBracket.style.display = 'none';
+      this.targetInfo.style.display = 'none';
     }
 
     // FA / ORBIT badges
@@ -134,16 +142,48 @@ export class ShipHUD {
     this.drawGizmo(camera);
   }
 
-  private updateTargetBracket(target: HUDTarget, camera: THREE.PerspectiveCamera): void {
+  private updateTargetBracket(target: HUDTarget, camera: THREE.PerspectiveCamera, distance: number): void {
     // Project the target into NDC and place a bracket overlay. If behind the
     // camera, hide it instead of drawing on the wrong side.
     const p = target.getPosition().project(camera);
-    if (p.z > 1 || p.z < -1) { this.targetBracket.style.display = 'none'; return; }
+    if (p.z > 1 || p.z < -1) {
+      this.targetBracket.style.display = 'none';
+      this.targetInfo.style.display = 'none';
+      return;
+    }
     const cx = (p.x * 0.5 + 0.5) * this.root.clientWidth;
     const cy = (-p.y * 0.5 + 0.5) * this.root.clientHeight;
     this.targetBracket.style.display = '';
     this.targetBracket.style.left = `${cx}px`;
     this.targetBracket.style.top  = `${cy}px`;
+
+    // Info card: anchored to the same point. Place to the right of the bracket
+    // if there's room, otherwise flip left so it doesn't run off-screen.
+    const card = this.targetInfo;
+    const swatch = target.color
+      ? `<div class="tinfo-swatch" style="background:rgb(${(target.color[0]*255)|0},${(target.color[1]*255)|0},${(target.color[2]*255)|0})"></div>`
+      : '';
+    const rows = target.details.map((d) =>
+      `<div class="tinfo-row"><span class="tinfo-k">${escapeText(d.k)}</span><span class="tinfo-v">${escapeText(d.v)}</span></div>`
+    ).join('');
+    card.innerHTML = `
+      <div class="tinfo-head">${swatch}<div class="tinfo-name">${escapeText(target.label)}</div></div>
+      <div class="tinfo-body">${rows}
+        <div class="tinfo-row"><span class="tinfo-k">DIST</span><span class="tinfo-v">${distance.toFixed(2)} u</span></div>
+      </div>
+    `;
+    card.style.display = '';
+    // Place card 24px right + 0px down from the bracket; flip if off-edge.
+    const margin = 24;
+    let left = cx + margin;
+    let top = cy - 8;
+    // Estimate card width 200, height 110 — generous, we just want to flip when near edge
+    const w = 200; const h = 110;
+    if (left + w > this.root.clientWidth - 8) left = cx - margin - w;
+    if (top + h > this.root.clientHeight - 8) top = this.root.clientHeight - h - 8;
+    if (top < 8) top = 8;
+    card.style.left = `${left}px`;
+    card.style.top  = `${top}px`;
   }
 
   /** Show a one-shot hint message at the bottom for a few seconds. */
@@ -288,9 +328,6 @@ export class ShipHUD {
       .ship-reticle::after {
         top: 50%; left: -6px; height: 1px; width: 4px; transform: translateY(-50%);
       }
-      .ship-hud-tr {
-        position: relative;
-      }
       .ship-hud-badges {
         position: absolute; top: 100%; right: 0; margin-top: 6px;
         display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
@@ -337,6 +374,41 @@ export class ShipHUD {
         background: rgba(255, 220, 130, 0.18); color: #ffd28a;
         border: 1px solid rgba(255, 220, 130, 0.35); border-radius: 3px;
         font-family: ui-monospace, monospace; font-size: 10px;
+      }
+      .ship-target-info {
+        position: absolute; width: 200px;
+        background: rgba(8, 12, 22, 0.85);
+        border: 1px solid rgba(255, 220, 130, 0.45);
+        border-radius: 6px;
+        padding: 8px 10px;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 0 16px rgba(255, 200, 80, 0.18);
+        pointer-events: none;
+      }
+      .tinfo-head {
+        display: flex; align-items: center; gap: 8px;
+        padding-bottom: 6px; margin-bottom: 6px;
+        border-bottom: 1px solid rgba(255, 220, 130, 0.18);
+      }
+      .tinfo-swatch {
+        width: 12px; height: 12px; border-radius: 50%;
+        box-shadow: 0 0 6px currentColor;
+      }
+      .tinfo-name {
+        color: #ffd28a; font-size: 12px; font-weight: 700;
+        letter-spacing: 0.3px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .tinfo-body { display: flex; flex-direction: column; gap: 3px; }
+      .tinfo-row {
+        display: grid; grid-template-columns: 48px 1fr;
+        gap: 8px; font-size: 11px;
+      }
+      .tinfo-k {
+        color: #6a8cba; letter-spacing: 1px; font-size: 9.5px; line-height: 1.5;
+      }
+      .tinfo-v {
+        color: #e8f3ff; font-variant-numeric: tabular-nums;
       }
     `;
     document.head.appendChild(style);

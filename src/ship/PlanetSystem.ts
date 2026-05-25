@@ -56,14 +56,17 @@ function hashSeed(a: number, b: number): number {
 }
 
 // ---- planet class → color/size hints ----
+// Radii are in world units; we deliberately keep them under the typical star
+// radius (~1.6 u) so stars still look stellar, but large enough that a close
+// fly-by fills a meaningful chunk of FOV. Rocky ≈ 0.4–1.0, gas ≈ 0.9–1.6.
 function classProperties(cls: PlanetClass, rng: () => number): { color: [number, number, number]; visualRadius: number } {
   switch (cls) {
-    case 'lava':   return { color: [0.95 + rng() * 0.05, 0.30 + rng() * 0.15, 0.15 + rng() * 0.10], visualRadius: 0.10 + rng() * 0.10 };
-    case 'rock':   return { color: [0.55 + rng() * 0.20, 0.45 + rng() * 0.15, 0.35 + rng() * 0.10], visualRadius: 0.08 + rng() * 0.10 };
-    case 'desert': return { color: [0.85 + rng() * 0.10, 0.65 + rng() * 0.15, 0.35 + rng() * 0.15], visualRadius: 0.10 + rng() * 0.10 };
-    case 'ocean':  return { color: [0.30 + rng() * 0.20, 0.55 + rng() * 0.20, 0.85 + rng() * 0.10], visualRadius: 0.12 + rng() * 0.10 };
-    case 'ice':    return { color: [0.78 + rng() * 0.10, 0.88 + rng() * 0.08, 0.98],                visualRadius: 0.10 + rng() * 0.10 };
-    case 'gas':    return { color: [0.70 + rng() * 0.20, 0.60 + rng() * 0.20, 0.45 + rng() * 0.20], visualRadius: 0.25 + rng() * 0.25 };
+    case 'lava':   return { color: [0.95 + rng() * 0.05, 0.30 + rng() * 0.15, 0.15 + rng() * 0.10], visualRadius: 0.45 + rng() * 0.40 };
+    case 'rock':   return { color: [0.55 + rng() * 0.20, 0.45 + rng() * 0.15, 0.35 + rng() * 0.10], visualRadius: 0.40 + rng() * 0.45 };
+    case 'desert': return { color: [0.85 + rng() * 0.10, 0.65 + rng() * 0.15, 0.35 + rng() * 0.15], visualRadius: 0.50 + rng() * 0.50 };
+    case 'ocean':  return { color: [0.30 + rng() * 0.20, 0.55 + rng() * 0.20, 0.85 + rng() * 0.10], visualRadius: 0.55 + rng() * 0.50 };
+    case 'ice':    return { color: [0.78 + rng() * 0.10, 0.88 + rng() * 0.08, 0.98],                visualRadius: 0.50 + rng() * 0.50 };
+    case 'gas':    return { color: [0.70 + rng() * 0.20, 0.60 + rng() * 0.20, 0.45 + rng() * 0.20], visualRadius: 0.90 + rng() * 0.70 };
   }
 }
 
@@ -91,12 +94,13 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
   else if (mass < 40) count = 4 + Math.floor(rng() * 4);
   else                count = 5 + Math.floor(rng() * 5);
 
-  // Inner edge tied to star radius; outer ~10× star radius for normal stars.
-  // For compact objects, push planets out (no inner edge close to event horizon).
+  // Inner edge sits well outside the star (the largest gas giants are ~1.5u
+  // so we need ~2× that clearance from the star's surface). Outer edge stays
+  // within reasonable visit range — far planets at 30-60u are still findable.
   const innerR = eff.type === 'blackhole'
-    ? eff.radius * 8
-    : eff.radius * (2.0 + rng() * 1.5);
-  const outerR = innerR * (4 + rng() * 6);
+    ? eff.radius * 14
+    : eff.radius * (4.5 + rng() * 3.0);
+  const outerR = innerR * (3 + rng() * 3);
 
   const planets: Planet[] = [];
   // Use log-uniform spacing so inner-system planets aren't all clumped.
