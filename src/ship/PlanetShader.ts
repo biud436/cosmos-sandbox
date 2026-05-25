@@ -399,6 +399,17 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
       `)
       // 4. Procedural emission. Only lava is non-trivial; other classes
       //    return 0 and the branch costs ~nothing.
+      //
+      // Plus a *visibility floor* tied to the current diffuseColor: an
+      // unconditional addition of 35% of the final diffuse to the emissive
+      // term. This guarantees the planet's body always registers — even
+      // when it's on the dark side or far from its host star and the
+      // direct/ambient terms (heavily ÷PI in three.js's PBR) leave the
+      // surface near-black. The user's symptom was a planet that read as
+      // "transparent body, only the atmospheric rim visible," which means
+      // the diffuse lighting alone wasn't enough to bring the body out
+      // against the void. Coupling emissive to the procedural diffuse keeps
+      // the planet's color identity intact while ensuring it's always seen.
       .replace('#include <emissivemap_fragment>', /* glsl */`
         #include <emissivemap_fragment>
         if (uDetail > 0.001) {
@@ -407,6 +418,7 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
           float e = emissionFn(n0, pp, uTime);
           totalEmissiveRadiance += uColor3 * e * 1.6 * uDetail;
         }
+        totalEmissiveRadiance += diffuseColor.rgb * 0.35;
       `);
   };
 
