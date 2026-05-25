@@ -7,6 +7,35 @@ import * as THREE from 'three';
 // crossing them in a session). Light crosses BOX_HALF (150 units) in 2.5s.
 export const LIGHTSPEED_UNITS = 60;
 
+// Propulsion modes. The ship has multiple thruster regimes so the player
+// can pick a speed that matches the task — fine maneuvering around a
+// planet, casual interplanetary cruise, hard interstellar traversal, or
+// FTL "warp" (the fictional one). Each mode caps maxSpeed differently;
+// Shift "boost" multiplies the cap ×2 inside whichever mode is active.
+//
+// Speeds are anchored to LIGHTSPEED_UNITS so the c-readout stays honest:
+//   approach: 0.5 u/s    ≈ 2.5 km/s    (orbital docking pace)
+//   cruise:   12 u/s     ≈ 60 km/s     (0.2c — current/historic default)
+//   high:     60 u/s     ≈ 300,000 km/s (1.0c — relativistic)
+//   warp:     600 u/s    ≈ 10c         (fictional spacetime-compression drive)
+export type PropulsionMode = 'approach' | 'cruise' | 'high' | 'warp';
+
+export interface PropulsionModeSpec {
+  id: PropulsionMode;
+  label: string;          // short HUD tag (Korean)
+  description: string;    // one-line hint shown on mode switch
+  maxSpeed: number;       // u/s at boost = 1
+}
+
+export const PROPULSION_SPECS: Record<PropulsionMode, PropulsionModeSpec> = {
+  approach: { id: 'approach', label: '근접', description: '근접 기동 · ~2 km/s · 행성 도킹용',                   maxSpeed: 0.5 },
+  cruise:   { id: 'cruise',   label: '순항', description: '순항 · ~60 km/s · 행성 간 이동',                        maxSpeed: 0.2 * LIGHTSPEED_UNITS },
+  high:     { id: 'high',     label: '고속', description: '고속 항해 · 광속 · 항성 간 이동',                        maxSpeed: LIGHTSPEED_UNITS },
+  warp:     { id: 'warp',     label: '워프', description: '워프 · 시공간 압축 · ~10c · 은하 횡단용 (가상 추진)', maxSpeed: 10 * LIGHTSPEED_UNITS },
+};
+
+export const PROPULSION_ORDER: PropulsionMode[] = ['approach', 'cruise', 'high', 'warp'];
+
 // 6-DOF spaceship controller. Borrows a Three.js PerspectiveCamera while
 // active and drives it directly via quaternion.
 //
@@ -53,12 +82,17 @@ export interface ShipState {
   /** speed / LIGHTSPEED_UNITS — the "x c" readout on the HUD. */
   speedC: number;
   boosting: boolean;
+  /** Currently-active propulsion regime. */
+  propulsionMode: PropulsionMode;
 }
 
 export class ShipController {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly dom: HTMLElement;
-  private readonly maxSpeed: number;
+  /** Caller-provided override; `null` means use the current propulsion mode. */
+  private readonly maxSpeedOverride: number | null;
+  /** Active propulsion mode. Defaults to cruise (the historic single regime). */
+  private propulsionMode: PropulsionMode = 'cruise';
 
   private _enabled = false;
   private pointerLocked = false;
@@ -67,6 +101,8 @@ export class ShipController {
   private faDecayK = 1.8;
   /** Per-toggle callback so the HUD can flash a hint. */
   onFlightAssistToggle: ((on: boolean) => void) | null = null;
+  /** Fired when the propulsion mode changes — HUD flashes a label. */
+  onPropulsionChange: ((spec: PropulsionModeSpec) => void) | null = null;
 
   // Ship state. The camera position/orientation mirrors these every frame.
   private readonly position = new THREE.Vector3();
@@ -133,11 +169,40 @@ export class ShipController {
   constructor(opts: ShipControllerOptions) {
     this.camera = opts.camera;
     this.dom = opts.domElement;
-    // Default cruise: 20% of lightspeed. Shift boost (×4) saturates at 0.8c.
-    this.maxSpeed = opts.maxSpeed ?? 0.2 * LIGHTSPEED_UNITS;
+    // If a caller pins maxSpeed via opts we honor it and disable mode-switching's
+    // effect on the cap. Otherwise the cap comes from the active mode.
+    this.maxSpeedOverride = opts.maxSpeed ?? null;
     const start = opts.initialPosition ?? this.camera.position;
     this.position.copy(start);
     this.orientation.copy(this.camera.quaternion);
+  }
+
+  /** Effective max speed for the active mode (boost not applied). */
+  private get currentMaxSpeed(): number {
+    return this.maxSpeedOverride ?? PROPULSION_SPECS[this.propulsionMode].maxSpeed;
+  }
+
+  /** Cycle to the next propulsion mode (Z key). Wraps around at the end. */
+  cyclePropulsionMode(delta = 1): void {
+    const i = PROPULSION_ORDER.indexOf(this.propulsionMode);
+    const next = PROPULSION_ORDER[(i + delta + PROPULSION_ORDER.length) % PROPULSION_ORDER.length];
+    this.setPropulsionMode(next);
+  }
+
+  setPropulsionMode(mode: PropulsionMode): void {
+    if (this.propulsionMode === mode) return;
+    this.propulsionMode = mode;
+    // If the new cap is below current speed, ease velocity down instead of
+    // a hard clamp — the cap loop in update() will keep tightening it.
+    this.onPropulsionChange?.(PROPULSION_SPECS[mode]);
+  }
+
+  getPropulsionMode(): PropulsionMode {
+    return this.propulsionMode;
+  }
+
+  getPropulsionSpec(): PropulsionModeSpec {
+    return PROPULSION_SPECS[this.propulsionMode];
   }
 
   get enabled(): boolean {
@@ -222,17 +287,23 @@ export class ShipController {
     const orbitR = Math.min(Math.max(currentDist, minRadius), minRadius * 8);
     radial.normalize();
 
-    // Tangent direction: prefer the ship's *current* velocity (projected to
-    // the plane perpendicular to radial). This makes orbit entry feel like
-    // a smooth circular continuation of motion rather than a snap.
+    // Tangent direction. The ship usually approaches *radially* (W toward
+    // planet), so its velocity has almost no tangential component — using
+    // the velocity-projection as the starting tangent then leaves an
+    // arbitrary residual whose sign feels random. Use the ship's local
+    // right axis instead: orbit always begins by curving across the
+    // viewport, which reads consistently no matter how the player came in.
+    // Fall back to local up (then world axes) if right ≈ radial.
     let tangential = new THREE.Vector3();
-    const vLen = this.velocity.length();
-    if (vLen > 0.05) {
-      tangential.copy(this.velocity).addScaledVector(radial, -this.velocity.dot(radial));
-      if (tangential.lengthSq() < 1e-4) tangential.set(0, 0, 0);
+    const localRight = this.tmpRight.set(1, 0, 0).applyQuaternion(this.orientation).clone();
+    tangential.copy(localRight).addScaledVector(radial, -localRight.dot(radial));
+    if (tangential.lengthSq() < 0.01) {
+      const localUp = this.tmpUp.set(0, 1, 0).applyQuaternion(this.orientation).clone();
+      tangential.copy(localUp).addScaledVector(radial, -localUp.dot(radial));
     }
-    if (tangential.lengthSq() < 1e-4) {
-      // Fall back to a world-up-aligned tangent.
+    if (tangential.lengthSq() < 0.01) {
+      // Pathological — radial happens to align with both ship axes. Use a
+      // world-up cross as a last resort.
       let normal = new THREE.Vector3(0, 1, 0).cross(radial);
       if (normal.lengthSq() < 0.05) normal = new THREE.Vector3(0, 0, 1).cross(radial);
       normal.normalize();
@@ -240,10 +311,13 @@ export class ShipController {
     }
     tangential.normalize();
 
-    // Tangential speed: a fixed linear budget so big orbits feel
-    // proportionally slower in angle but identical in flow speed.
-    const tangentialSpeed = 8; // u/s — comfortable scenic pace
-    const angularSpeed = tangentialSpeed / orbitR;
+    // Angular speed: scenic. Kepler-ish T ∝ r^0.7 with [45, 120]-second
+    // bounds so a tight orbit completes in under a minute and a wide one
+    // doesn't drag past two minutes. Previously the orbit ran at a fixed
+    // 8 u/s tangential, which at small radii spun the ship around in 3-4
+    // seconds — comically fast.
+    const orbitPeriod = Math.min(120, Math.max(45, 30 * Math.pow(orbitR, 0.7)));
+    const angularSpeed = (Math.PI * 2) / orbitPeriod;
 
     this.orbit = {
       target: getTarget,
@@ -392,8 +466,12 @@ export class ShipController {
     this.tmpRight.set(1, 0, 0).applyQuaternion(this.orientation);
     this.tmpUp.set(0, 1, 0).applyQuaternion(this.orientation);
 
-    const boost = this.keys.has('shift') ? 4 : 1;
-    const accel = this.maxSpeed * 1.5 * boost; // can saturate to maxSpeed*boost in ~0.67s
+    // Boost is now ×2 (was ×4 when there was only one regime) — modes carry
+    // most of the speed-scale variation, and ×4 on warp mode would push the
+    // ship past 20c which feels arbitrary.
+    const boost = this.keys.has('shift') ? 2 : 1;
+    const baseMax = this.currentMaxSpeed;
+    const accel = baseMax * 1.5 * boost; // saturates to baseMax·boost in ~0.67s
 
     const thrustW = this.keys.has('w');
     const thrustS = this.keys.has('s');
@@ -422,9 +500,10 @@ export class ShipController {
       if (this.velocity.lengthSq() < 1e-4) this.velocity.set(0, 0, 0);
     }
 
-    // Soft speed cap. Beyond maxSpeed*boost, exponentially damp excess so
-    // the ship can't accelerate forever.
-    const cap = this.maxSpeed * boost;
+    // Soft speed cap. Beyond baseMax*boost, exponentially damp excess so
+    // the ship can't accelerate forever. The same loop also pulls speed
+    // down toward a new (lower) cap when the player downshifts modes.
+    const cap = baseMax * boost;
     const speed = this.velocity.length();
     if (speed > cap) {
       const k = Math.exp(-2.0 * dt); // approach cap quickly but smoothly
@@ -444,7 +523,7 @@ export class ShipController {
     const forward = this.tmpForward.set(0, 0, -1).applyQuaternion(this.orientation).clone();
     const speed = this.velocity.length();
     const boosting = this.keys.has('shift');
-    const cap = this.maxSpeed * (boosting ? 4 : 1);
+    const cap = this.currentMaxSpeed * (boosting ? 2 : 1);
     return {
       position: this.position.clone(),
       velocity: this.velocity.clone(),
@@ -454,6 +533,7 @@ export class ShipController {
       speed,
       speedC: speed / LIGHTSPEED_UNITS,
       boosting,
+      propulsionMode: this.propulsionMode,
     };
   }
 
@@ -466,7 +546,7 @@ export class ShipController {
     return (
       key === 'w' || key === 'a' || key === 's' || key === 'd' ||
       key === 'q' || key === 'e' || key === 'r' || key === 'f' ||
-      key === 'x' ||
+      key === 'x' || key === 'z' ||
       key === ' ' || key === 'spacebar' || key === 'shift'
     );
   }
@@ -491,6 +571,13 @@ export class ShipController {
       }
       return;
     }
+    if (key === 'z') {
+      // Edge-triggered propulsion-mode cycle. Shift+Z steps backward.
+      if (!e.repeat) {
+        this.cyclePropulsionMode(e.shiftKey ? -1 : +1);
+      }
+      return;
+    }
     this.keys.add(key);
   }
 
@@ -500,6 +587,7 @@ export class ShipController {
     e.stopImmediatePropagation();
     if (key === 'shift') { this.keys.delete('shift'); return; }
     if (key === ' ' || key === 'spacebar') return; // edge-triggered, no held state
+    if (key === 'z') return; // edge-triggered too
     this.keys.delete(key);
   }
 

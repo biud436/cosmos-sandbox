@@ -2,28 +2,24 @@ import * as THREE from 'three';
 import { Planet, PlanetClass } from './PlanetSystem';
 
 // Procedural planet materials. No textures, no image assets — every surface
-// pattern is GLSL noise evaluated on the unit-sphere local position.
+// pattern, normal, and roughness map is GLSL noise evaluated on the
+// unit-sphere local position.
 //
 // Pipeline (per planet):
-//   - Start with a stock MeshStandardMaterial so the scene's lights (the new
-//     per-star point light) keep working with no manual lighting code.
-//   - Patch the shader via onBeforeCompile: inject 3D simplex noise + an
-//     fbm helper into the common header, then replace the diffuse color
-//     fragment with a class-specific procedural color computed from the
-//     local sphere direction.
-//   - Add a uDetail uniform (0..1) so the procedural color cross-fades from
-//     the flat base color (far away) to the full procedural treatment
-//     (close-up / orbit). The detail value is driven from JS each frame.
-//   - Add a uTime uniform so the few classes that animate (lava cracks,
-//     gas-band turbulence, ocean clouds) can advance.
-//
-// The injection trick deliberately keeps three.js's standard lighting model
-// intact — we only override what `diffuseColor` is when no map is bound.
-// That's how the star point light still produces a proper terminator on
-// the procedural surface.
+//   - Start from MeshStandardMaterial so the scene's per-star point light and
+//     ambient terms keep working with no manual lighting code.
+//   - Patch the shader via onBeforeCompile and inject four hooks:
+//       1. <map_fragment>          → override `diffuseColor.rgb` with procColor.
+//       2. <normal_fragment_maps>  → perturb `normal` from the analytic
+//          gradient of a per-class height field, so mountains/craters catch
+//          real terminator light instead of staying flat.
+//       3. <roughnessmap_fragment> → modulate `roughnessFactor` per pixel
+//          (ocean glint, ice gloss, dusty desert).
+//       4. <emissivemap_fragment>  → add per-class emission (lava cracks glow
+//          on the night side).
+//   - All four hooks are driven by a single `uDetail` (0..1) ramp so distant
+//     planets stay cheap and dolly-ins reveal the procedural detail.
 
-// 3D simplex noise — Stefan Gustavson's public-domain reference port.
-// ~50 lines once formatted; cheap enough for a handful of pixels per frame.
 const NOISE_GLSL = /* glsl */`
   vec3 _mod289v3(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
   vec4 _mod289v4(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
@@ -76,95 +72,179 @@ const NOISE_GLSL = /* glsl */`
     for (int i = 0; i < 4; i++) { f += a * snoise(p); p *= 2.0; a *= 0.5; }
     return f;
   }
-  float ridge(vec3 p) {
-    float n = abs(fbm(p));
-    return 1.0 - n;
+  float fbm5(vec3 p) {
+    float f = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) { f += a * snoise(p); p *= 2.0; a *= 0.5; }
+    return f;
+  }
+  float ridge(vec3 p) { return 1.0 - abs(fbm(p)); }
+  // Domain warp: feed an fbm vector back into position. Breaks the gridded
+  // look of plain fbm and gives continents/dunes a more organic flow.
+  vec3 warp(vec3 p) {
+    return p + vec3(fbm(p + 1.7), fbm(p + 9.2), fbm(p + 3.1)) * 0.6;
   }
 `;
 
-// Per-class surface color function. Takes the unit-sphere local direction
-// (already normalized) plus base/secondary/tertiary tints derived in JS,
-// plus the per-planet seed and time uniforms. Returns the procedural color.
+// Each class contributes three fragment-shader functions:
+//   heightFn(p)   → scalar "elevation" used by the analytic normal gradient.
+//                   For flat surfaces (gas, ocean water) it returns near zero.
+//   procColor(n, p, base, c2, c3, t) → final diffuse color. `n` is the
+//                   unit-sphere local direction (pre-seed) so latitude-based
+//                   effects like polar caps work; `p` is the seed-shifted
+//                   noise-space position.
+//   roughnessFn(n, p) → per-pixel roughness in [0..1]. Ocean water glints,
+//                   continents stay matte, ice goes glossy.
+//   emissionFn(n, p, t) → scalar [0..1] for additive class-tint emission;
+//                   returns 0 for non-lava classes so the hook stays cheap.
 //
-// Each class shares a signature, so the dispatcher in the fragment shader
-// just calls one based on a compile-time define.
+// All four are inlined into the same fragment shader, picked at compile time.
 function classGLSL(cls: PlanetClass): string {
   switch (cls) {
     case 'rock': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        float h = fbm(p * 3.0) * 0.5 + 0.5;          // continents
-        float craters = ridge(p * 12.0);              // small detail
-        float band = smoothstep(0.35, 0.65, h);
-        vec3 col = mix(c2 * 0.7, base, band);
+      float heightFn(vec3 p) {
+        return fbm(p * 2.5) * 0.55 + ridge(p * 8.0) * 0.30 + fbm(p * 18.0) * 0.10;
+      }
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        vec3 wp = warp(p * 1.4);
+        float h = fbm5(wp * 2.0) * 0.5 + 0.5;
+        float craters = ridge(p * 14.0);
+        float band = smoothstep(0.35, 0.62, h);
+        vec3 col = mix(c2 * 0.65, base, band);
         col = mix(col, c3, smoothstep(0.78, 0.95, h));
-        col *= 0.85 + 0.25 * craters;
+        col *= 0.78 + 0.28 * craters;
+        // Cold polar dusting — subtle on bare rocks.
+        float lat = abs(n.y);
+        col = mix(col, vec3(0.86, 0.89, 0.94), smoothstep(0.85, 0.97, lat) * 0.45);
         return col;
       }
+      float roughnessFn(vec3 n, vec3 p) {
+        return clamp(0.78 + 0.18 * fbm(p * 6.0), 0.45, 0.98);
+      }
+      float emissionFn(vec3 n, vec3 p, float t) { return 0.0; }
     `;
     case 'desert': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        // Strong latitudinal banding evokes wind-shaped dunes
+      float heightFn(vec3 p) {
         float lat = p.y;
         float dunes = sin(lat * 14.0 + fbm(p * 2.0) * 3.5);
-        float coarse = fbm(p * 4.0);
+        return dunes * 0.18 + fbm(p * 3.0) * 0.25 + fbm(p * 20.0) * 0.08;
+      }
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        vec3 wp = warp(p * 1.1);
+        float lat = n.y;
+        float dunes = sin(lat * 14.0 + fbm(wp * 2.0) * 3.5);
+        float coarse = fbm5(wp * 4.0);
         float band = smoothstep(-0.3, 0.6, dunes + coarse * 0.4);
         vec3 col = mix(c2, base, band);
         col = mix(col, c3, smoothstep(0.6, 1.0, coarse));
+        // Equator warmth: dust-storm reddening
+        float eq = 1.0 - abs(n.y);
+        col *= mix(1.0, 1.10, smoothstep(0.6, 1.0, eq) * 0.5);
         return col;
       }
+      float roughnessFn(vec3 n, vec3 p) {
+        return 0.88 + 0.06 * fbm(p * 8.0);
+      }
+      float emissionFn(vec3 n, vec3 p, float t) { return 0.0; }
     `;
     case 'ocean': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        // Two-tone water + a slow drifting cloud layer in white.
+      float heightFn(vec3 p) {
+        // Water is flat; only land contributes relief.
         float h = fbm(p * 2.5);
-        float coast = smoothstep(0.0, 0.25, h);
-        vec3 water = mix(c2, base, coast);
-        float clouds = fbm(p * 3.2 + vec3(t * 0.018, 0.0, t * 0.012));
-        float cmask = smoothstep(0.35, 0.65, clouds);
-        return mix(water, vec3(0.96, 0.97, 1.0), cmask * 0.55);
+        float land = smoothstep(0.0, 0.05, h);
+        return land * (h * 0.55 + 0.20) + fbm(p * 16.0) * 0.04 * land;
       }
-    `;
-    case 'ice': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        // Cracks: places where two octaves cross zero produce thin lines.
-        float n = fbm(p * 6.0);
-        float cracks = smoothstep(0.04, 0.0, abs(n));
-        float h = fbm(p * 2.0) * 0.5 + 0.5;
-        vec3 col = mix(base, c2, smoothstep(0.45, 0.7, h));
-        col = mix(col, c3 * 0.6, cracks);
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        vec3 wp = warp(p * 1.3);
+        float h = fbm5(wp * 2.5);
+        float coast = smoothstep(0.0, 0.04, h);
+        vec3 deep = c2 * 0.7;
+        vec3 shallow = mix(c2, base, 0.35);
+        vec3 water = mix(deep, shallow, smoothstep(-0.1, 0.05, h));
+        vec3 land = c3 * (0.7 + 0.4 * fbm(p * 6.0));
+        vec3 col = mix(water, land, coast);
+        // Polar ice caps — Earth-like. Use unseeded latitude.
+        float lat = abs(n.y);
+        col = mix(col, vec3(0.95, 0.97, 1.0), smoothstep(0.74, 0.90, lat) * 0.88);
+        // Animated cloud layer — drifts independently from continents.
+        float clouds = fbm(p * 3.2 + vec3(t * 0.018, 0.0, t * 0.012));
+        col = mix(col, vec3(0.96, 0.97, 1.0), smoothstep(0.38, 0.65, clouds) * 0.5);
         return col;
       }
+      float roughnessFn(vec3 n, vec3 p) {
+        vec3 wp = warp(p * 1.3);
+        float h = fbm5(wp * 2.5);
+        float landMask = smoothstep(0.0, 0.04, h);
+        // Polar caps are matte ice too
+        float caps = smoothstep(0.74, 0.90, abs(n.y));
+        return mix(0.22, 0.88, max(landMask, caps));
+      }
+      float emissionFn(vec3 n, vec3 p, float t) { return 0.0; }
+    `;
+    case 'ice': return /* glsl */`
+      float heightFn(vec3 p) {
+        float nv = fbm(p * 6.0);
+        float cracks = smoothstep(0.04, 0.0, abs(nv));
+        return fbm(p * 2.5) * 0.4 - cracks * 0.25;
+      }
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        vec3 wp = warp(p * 1.4);
+        float nv = fbm(wp * 6.0);
+        float cracks = smoothstep(0.04, 0.0, abs(nv));
+        float h = fbm5(wp * 2.0) * 0.5 + 0.5;
+        vec3 col = mix(base, c2, smoothstep(0.45, 0.7, h));
+        col = mix(col, c3 * 0.55, cracks);
+        return col;
+      }
+      float roughnessFn(vec3 n, vec3 p) {
+        float nv = fbm(p * 6.0);
+        float cracks = smoothstep(0.04, 0.0, abs(nv));
+        return mix(0.35, 0.78, cracks);
+      }
+      float emissionFn(vec3 n, vec3 p, float t) { return 0.0; }
     `;
     case 'gas': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        // Banding by latitude with turbulence kneaded in; slow drift over time.
-        float lat = p.y;
-        float turb = fbm(p * 2.5 + vec3(t * 0.04, 0.0, 0.0));
-        float bands = sin(lat * 9.0 + turb * 2.2);
-        float storm = smoothstep(0.62, 0.95, fbm(p * 4.0 + vec3(0.0, t * 0.01, 0.0)));
+      // Gas giants have no solid relief — return 0 so the normal gradient
+      // stays flat and the sphere reads as smooth banded atmosphere.
+      float heightFn(vec3 p) { return 0.0; }
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        vec3 wp = warp(p * 1.5 + vec3(t * 0.02, 0.0, 0.0));
+        float lat = n.y;
+        float turb = fbm5(wp * 2.5 + vec3(t * 0.04, 0.0, 0.0));
+        float bands = sin(lat * 9.0 + turb * 2.4);
+        float storm = smoothstep(0.62, 0.95, fbm(wp * 4.0 + vec3(0.0, t * 0.01, 0.0)));
         vec3 col = mix(base, c2, smoothstep(-0.2, 0.4, bands));
         col = mix(col, c3, smoothstep(0.4, 0.95, bands));
         col = mix(col, c3 * 1.15, storm * 0.5);
+        // Polar darkening — gas giants commonly show this.
+        col *= mix(1.0, 0.80, smoothstep(0.85, 1.0, abs(n.y)));
         return col;
       }
+      float roughnessFn(vec3 n, vec3 p) { return 0.65; }
+      float emissionFn(vec3 n, vec3 p, float t) { return 0.0; }
     `;
     case 'lava': return /* glsl */`
-      vec3 procColor(vec3 p, vec3 base, vec3 c2, vec3 c3, float seed, float t) {
-        p += seed * 100.0;
-        // Dark basalt + glowing crack network. Cracks pulse very slowly.
-        float n = fbm(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
-        float hot = pow(smoothstep(0.15, -0.35, -n), 3.0);
-        vec3 dark = c2 * 0.45;
-        vec3 col = mix(dark, base * 0.85, smoothstep(-0.5, 0.4, n));
-        // c3 acts as the molten color; boost it heavily where 'hot' fires.
+      float heightFn(vec3 p) {
+        return fbm(p * 4.0) * 0.45 + fbm(p * 12.0) * 0.15;
+      }
+      vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
+        float nv = fbm5(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
+        float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
+        vec3 dark = c2 * 0.40;
+        vec3 col = mix(dark, base * 0.85, smoothstep(-0.5, 0.4, nv));
         col = mix(col, c3, hot);
-        col += c3 * hot * (0.6 + 0.4 * sin(t * 1.5 + seed * 6.28));
+        col += c3 * hot * (0.6 + 0.4 * sin(t * 1.5));
         return col;
+      }
+      float roughnessFn(vec3 n, vec3 p) {
+        float nv = fbm5(p * 5.0);
+        float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
+        // Magma is glossy hot, basalt is rough. Pulls roughness down where hot.
+        return mix(0.72, 0.20, hot);
+      }
+      float emissionFn(vec3 n, vec3 p, float t) {
+        float nv = fbm5(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
+        float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
+        return hot * (0.85 + 0.20 * sin(t * 1.5));
       }
     `;
   }
@@ -182,6 +262,19 @@ function deriveTints(planet: Planet): { c2: THREE.Color; c3: THREE.Color } {
     case 'ice':    return { c2: new THREE.Color(0.78, 0.88, 0.98), c3: new THREE.Color(0.55, 0.7, 0.92) }; // crevasse blue
     case 'gas':    return { c2: new THREE.Color(r*0.65, g*0.7,  b*0.85), c3: new THREE.Color(Math.min(1, r*1.25), Math.min(1, g*0.85), Math.min(1, b*0.65)) };
     case 'lava':   return { c2: new THREE.Color(0.18, 0.10, 0.08), c3: new THREE.Color(1.0, 0.55, 0.18) }; // magma
+  }
+}
+
+// How aggressively each class bends the normal from the height gradient.
+// Gas giants and oceans have ~no relief; rock/lava/ice get meaningful bump.
+function bumpStrengthFor(cls: PlanetClass): number {
+  switch (cls) {
+    case 'rock':   return 0.85;
+    case 'desert': return 0.55;
+    case 'ocean':  return 0.55;  // only continents bump; water stays flat by heightFn
+    case 'ice':    return 0.70;
+    case 'gas':    return 0.0;
+    case 'lava':   return 0.90;
   }
 }
 
@@ -213,6 +306,7 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
   };
 
   const surface = classGLSL(planet.planetClass);
+  const bumpStrength = bumpStrengthFor(planet.planetClass);
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uDetail = uniformRefs.uDetail;
@@ -220,19 +314,20 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
     shader.uniforms.uColor2 = { value: c2 };
     shader.uniforms.uColor3 = { value: c3 };
     shader.uniforms.uSeed = { value: planet.shaderSeed };
+    shader.uniforms.uBump = { value: bumpStrength };
 
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `
+      .replace('#include <common>', /* glsl */`
         #include <common>
         varying vec3 vLocalDir;
       `)
-      .replace('#include <begin_vertex>', `
+      .replace('#include <begin_vertex>', /* glsl */`
         #include <begin_vertex>
         vLocalDir = normalize(position);
       `);
 
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `
+      .replace('#include <common>', /* glsl */`
         #include <common>
         varying vec3 vLocalDir;
         uniform float uDetail;
@@ -240,15 +335,66 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
         uniform vec3 uColor2;
         uniform vec3 uColor3;
         uniform float uSeed;
+        uniform float uBump;
         ${NOISE_GLSL}
         ${surface}
       `)
-      .replace('#include <map_fragment>', `
+      // 1. Diffuse color from procedural surface.
+      .replace('#include <map_fragment>', /* glsl */`
         #include <map_fragment>
         if (uDetail > 0.001) {
           vec3 base = diffuseColor.rgb;
-          vec3 proc = procColor(vLocalDir, base, uColor2, uColor3, uSeed, uTime);
+          vec3 n0 = normalize(vLocalDir);
+          vec3 pp = n0 + uSeed * 100.0;
+          vec3 proc = procColor(n0, pp, base, uColor2, uColor3, uTime);
           diffuseColor.rgb = mix(base, proc, uDetail);
+        }
+      `)
+      // 2. Normal perturbation from height field's analytic gradient.
+      //    Works without a tangent frame because the geometric normal on a
+      //    unit sphere IS the local position — we synthesize a bumped normal
+      //    in object space by projecting the height gradient onto the tangent
+      //    plane, then transform to view space with normalMatrix.
+      .replace('#include <normal_fragment_maps>', /* glsl */`
+        #include <normal_fragment_maps>
+        if (uDetail > 0.001 && uBump > 0.0) {
+          const float eps = 0.015;
+          vec3 n0 = normalize(vLocalDir);
+          vec3 pp = n0 + uSeed * 100.0;
+          float h0 = heightFn(pp);
+          float hx = heightFn(pp + vec3(eps, 0.0, 0.0));
+          float hy = heightFn(pp + vec3(0.0, eps, 0.0));
+          float hz = heightFn(pp + vec3(0.0, 0.0, eps));
+          vec3 grad = (vec3(hx, hy, hz) - h0) / eps;
+          // Project gradient onto tangent plane so the perturbation stays
+          // tangential — moving the normal off the sphere is meaningless.
+          grad -= n0 * dot(grad, n0);
+          vec3 nLocal = normalize(n0 - grad * uBump);
+          vec3 nView = normalize(normalMatrix * nLocal);
+          // Ramp the perturbation with detail so distant planets keep the
+          // smooth shaded look and don't visibly snap when crossing the LOD.
+          normal = normalize(mix(normal, nView, uDetail));
+        }
+      `)
+      // 3. Per-pixel roughness modulation.
+      .replace('#include <roughnessmap_fragment>', /* glsl */`
+        #include <roughnessmap_fragment>
+        if (uDetail > 0.001) {
+          vec3 n0 = normalize(vLocalDir);
+          vec3 pp = n0 + uSeed * 100.0;
+          float rr = roughnessFn(n0, pp);
+          roughnessFactor = mix(roughnessFactor, rr, uDetail);
+        }
+      `)
+      // 4. Procedural emission. Only lava is non-trivial; other classes
+      //    return 0 and the branch costs ~nothing.
+      .replace('#include <emissivemap_fragment>', /* glsl */`
+        #include <emissivemap_fragment>
+        if (uDetail > 0.001) {
+          vec3 n0 = normalize(vLocalDir);
+          vec3 pp = n0 + uSeed * 100.0;
+          float e = emissionFn(n0, pp, uTime);
+          totalEmissiveRadiance += uColor3 * e * 1.6 * uDetail;
         }
       `);
   };

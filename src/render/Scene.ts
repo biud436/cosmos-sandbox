@@ -1222,11 +1222,14 @@ export class Scene {
         this.effectorViews.set(eff, view);
       }
       const typeVisible = this.visibility[this.visibilityKeyFor(eff.type)];
-      // Stars get a larger visual halo so they read as actual stars, not just dots.
+      // Stars get a much larger visual halo so they read as actual stars and
+      // dwarf the planets in their system (Sun:Jupiter ≈ 10:1 in real life;
+      // 4× of the base 1.6 puts gas giants at ~25% of their host's visual
+      // size — close enough to register as "different class of object").
       // Nebulae's radius already represents the cloud extent — use 0.5x so the
       // 5x5 plane scaled by radius·0.5 covers the radius with soft falloff.
       const scaleBoost =
-        eff.type === 'star' ? 1.5 :
+        eff.type === 'star' ? 4.0 :
         eff.type === 'nebula' ? 0.5 :
         eff.type === 'neutron_star' ? 2.0 :
         1.0;

@@ -4,7 +4,7 @@ import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
 import { generatePlanetSystem, planetClassLabel } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
-import { ShipHUD } from './ship/ShipHUD';
+import { ShipHUD, formatRealDistance } from './ship/ShipHUD';
 import { ShipMenu } from './ship/ShipMenu';
 import { StarSystemView } from './ship/StarSystemRenderer';
 import { Controls, INTERNAL_DT, BASE_SUBSTEPS_PER_FRAME } from './ui/Controls';
@@ -228,6 +228,12 @@ ship.onFlightAssistToggle = (on) => {
   shipHUD.flashHint(on ? '비행 보조 ON — 키를 떼면 감속' : '비행 보조 OFF — 무마찰 (관성 유지)');
 };
 
+// Propulsion-mode flash. Z (or Shift+Z reverse) cycles modes; the HUD
+// label updates the next frame from getState().
+ship.onPropulsionChange = (spec) => {
+  shipHUD.flashHint(`추진 모드 → ${spec.label} · ${spec.description}`);
+};
+
 layout.bindToolbar({
   presets: PRESETS.map((p) => p.name),
   initialPreset: controls.state.preset,
@@ -430,8 +436,8 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
           details: [
             { k: '분류',  v: planetClassLabel(planet.planetClass) },
             { k: '모성',  v: view.planetSystem.starName },
-            { k: '궤도',  v: `${planet.orbitRadius.toFixed(1)} u` },
-            { k: '반경',  v: `${planet.visualRadius.toFixed(2)} u` },
+            { k: '궤도',  v: formatRealDistance(planet.orbitRadius) },
+            { k: '반경',  v: formatRealDistance(planet.visualRadius) },
             { k: '주기',  v: `${planet.periodSec.toFixed(1)} s` },
           ],
         };

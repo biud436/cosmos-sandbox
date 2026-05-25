@@ -1,6 +1,39 @@
 import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
-import { ShipState } from './ShipController';
+import { LIGHTSPEED_UNITS, PROPULSION_SPECS, ShipState } from './ShipController';
+
+// Real-unit display for spaceship mode. The sim is unitless internally
+// ("u"), but the ship controller pins c = LIGHTSPEED_UNITS u/s — that's
+// the only anchor we have to real space, so all displayed distances are
+// converted through it: 1 u = c / LIGHTSPEED_UNITS km/s ≈ 4,996.54 km.
+//
+// Resulting scale: a 60-u planet orbit ≈ 300,000 km (Earth–Moon-ish), a
+// 150-u box ≈ 750,000 km. The sim is compressed to roughly solar-system
+// neighborhood scale, so AU appears only on the outer system and ly is
+// effectively unreachable — but the formatter handles those too.
+const C_KMS = 299792.458; // speed of light, km/s
+const KM_PER_U = C_KMS / LIGHTSPEED_UNITS;
+const KM_PER_AU = 149_597_870.7;
+const KM_PER_LY = 9.4607304725808e12;
+
+export function formatRealDistance(u: number): string {
+  const km = u * KM_PER_U;
+  // Light-year tier (effectively unused at current sim scale but here for
+  // future-proofing — Hubble expansion could push readings beyond an AU).
+  if (km >= KM_PER_LY * 0.05) return `${(km / KM_PER_LY).toFixed(2)} ly`;
+  if (km >= KM_PER_AU * 0.05) return `${(km / KM_PER_AU).toFixed(2)} AU`;
+  if (km >= 1e6) return `${(km / 1e3).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} km`;
+  if (km >= 100) return `${km.toFixed(0)} km`;
+  if (km >= 1) return `${km.toFixed(1)} km`;
+  return `${(km * 1000).toFixed(0)} m`;
+}
+
+function formatRealSpeed(uPerSec: number): string {
+  const kms = uPerSec * KM_PER_U; // km/s
+  if (kms >= 1000) return `${(kms / 1000).toFixed(2)} Mm/s`;
+  if (kms >= 1) return `${kms.toFixed(1)} km/s`;
+  return `${(kms * 1000).toFixed(0)} m/s`;
+}
 
 export interface HUDTarget {
   kind: 'planet' | 'star';
@@ -30,6 +63,7 @@ export class ShipHUD {
   private readonly hintEl: HTMLElement;
   private readonly faBadge: HTMLElement;
   private readonly orbitBadge: HTMLElement;
+  private readonly modeBadge: HTMLElement;
   private readonly targetBracket: HTMLElement;
   private readonly targetInfo: HTMLElement;
   private readonly navArrow: HTMLElement;
@@ -51,16 +85,30 @@ export class ShipHUD {
       <div class="ship-hud-tr">
         <canvas id="ship-gizmo" width="96" height="96"></canvas>
         <div class="ship-hud-badges">
+          <span class="ship-badge mode" id="ship-badge-mode">순항</span>
           <span class="ship-badge" id="ship-badge-fa">FA</span>
           <span class="ship-badge orbit" id="ship-badge-orbit" style="display:none">ORBIT</span>
         </div>
+      </div>
+      <div class="ship-hud-help" id="ship-hud-help">
+        <div class="ship-help-title">조작</div>
+        <div class="ship-help-row"><span class="ship-help-k">WASD</span><span>이동</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">R / F</span><span>상승 / 하강</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Q / E</span><span>롤</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Mouse</span><span>요·피치</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Shift</span><span>부스트 ×2</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">X</span><span>비상 정지</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Space</span><span>비행보조 토글</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Z</span><span>추진 모드 (Shift+Z 역방향)</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">G</span><span>레티클 대상 궤도</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">Tab</span><span>메뉴 / 도감</span></div>
       </div>
       <div class="ship-hud-bc">
         <div class="ship-thr-label">THROTTLE</div>
         <div class="ship-thr-bar"><div class="ship-thr-fill" id="ship-thr-fill"></div></div>
       </div>
       <div class="ship-hud-hint" id="ship-hud-hint">
-        클릭하여 마우스 잠금 · WASD 이동 · Q/E 롤 · R/F 상하 · Shift 부스트 · X 정지 · Space 비행보조 · G 궤도 · Tab 메뉴
+        클릭하여 마우스 잠금 · 오른쪽 패널 참조 · Z 추진모드 · G 궤도 · Tab 메뉴
       </div>
       <div class="ship-reticle"></div>
       <div class="ship-target-bracket" id="ship-target-bracket" style="display:none"></div>
@@ -82,6 +130,7 @@ export class ShipHUD {
     this.hintEl = this.root.querySelector('#ship-hud-hint') as HTMLElement;
     this.faBadge = this.root.querySelector('#ship-badge-fa') as HTMLElement;
     this.orbitBadge = this.root.querySelector('#ship-badge-orbit') as HTMLElement;
+    this.modeBadge = this.root.querySelector('#ship-badge-mode') as HTMLElement;
     this.targetBracket = this.root.querySelector('#ship-target-bracket') as HTMLElement;
     this.targetInfo = this.root.querySelector('#ship-target-info') as HTMLElement;
     this.navArrow = this.root.querySelector('#ship-nav-arrow') as HTMLElement;
@@ -118,14 +167,14 @@ export class ShipHUD {
     this.posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
     const v = state.velocity;
     this.velEl.textContent = `${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)}`;
-    this.spdEl.innerHTML = `${state.speed.toFixed(2)} u/s · <b>${state.speedC.toFixed(3)} c</b>${state.boosting ? ' · BOOST' : ''}`;
+    this.spdEl.innerHTML = `${formatRealSpeed(state.speed)} · <b>${state.speedC.toFixed(3)} c</b>${state.boosting ? ' · BOOST' : ''}`;
     this.thrFill.style.width = `${(state.throttleNormalized * 100).toFixed(1)}%`;
     if (state.boosting) this.thrFill.classList.add('boost');
     else this.thrFill.classList.remove('boost');
 
     if (nearestStar) {
       const name = nearestStar.eff.name ?? `${nearestStar.eff.type}`;
-      this.nearestEl.textContent = `${name} · ${nearestStar.distance.toFixed(1)} u`;
+      this.nearestEl.textContent = `${name} · ${formatRealDistance(nearestStar.distance)}`;
     } else {
       this.nearestEl.textContent = '—';
     }
@@ -133,7 +182,7 @@ export class ShipHUD {
     if (target) {
       const tp = target.getPosition();
       const dist = tp.distanceTo(state.position);
-      this.tgtEl.innerHTML = `<b>${escapeText(target.label)}</b> · ${dist.toFixed(1)} u · <span class="ship-key">G</span> 궤도`;
+      this.tgtEl.innerHTML = `<b>${escapeText(target.label)}</b> · ${formatRealDistance(dist)} · <span class="ship-key">G</span> 궤도`;
       this.updateTargetBracket(target, camera, dist);
     } else {
       this.tgtEl.textContent = '레티클을 별/행성에 맞추세요';
@@ -141,7 +190,7 @@ export class ShipHUD {
       this.targetInfo.style.display = 'none';
     }
 
-    // FA / ORBIT badges
+    // FA / ORBIT / MODE badges
     this.faBadge.classList.toggle('off', !flightAssist);
     this.faBadge.textContent = flightAssist ? 'FA' : 'FA OFF';
     if (orbiting) {
@@ -150,6 +199,9 @@ export class ShipHUD {
     } else {
       this.orbitBadge.style.display = 'none';
     }
+    const modeSpec = PROPULSION_SPECS[state.propulsionMode];
+    this.modeBadge.textContent = `MODE · ${modeSpec.label}`;
+    this.modeBadge.dataset.mode = state.propulsionMode;
 
     this.drawGizmo(camera);
     this.updateNavArrow(nav, state, camera);
@@ -203,7 +255,7 @@ export class ShipHUD {
       const angle = Math.atan2(dx, -dy);
       tri.style.transform = `rotate(${angle}rad)`;
     }
-    this.navLabel.textContent = `${nav.label} · ${dist.toFixed(1)} u`;
+    this.navLabel.textContent = `${nav.label} · ${formatRealDistance(dist)}`;
   }
 
   private updateTargetBracket(target: HUDTarget, camera: THREE.PerspectiveCamera, distance: number): void {
@@ -233,7 +285,7 @@ export class ShipHUD {
     card.innerHTML = `
       <div class="tinfo-head">${swatch}<div class="tinfo-name">${escapeText(target.label)}</div></div>
       <div class="tinfo-body">${rows}
-        <div class="tinfo-row"><span class="tinfo-k">DIST</span><span class="tinfo-v">${distance.toFixed(2)} u</span></div>
+        <div class="tinfo-row"><span class="tinfo-k">DIST</span><span class="tinfo-v">${formatRealDistance(distance)}</span></div>
       </div>
     `;
     card.style.display = '';
@@ -414,6 +466,58 @@ export class ShipHUD {
         background: rgba(255, 200, 110, 0.18);
         border-color: rgba(255, 200, 110, 0.45);
         color: #ffd28a;
+      }
+      .ship-badge.mode {
+        background: rgba(140, 200, 130, 0.18);
+        border-color: rgba(140, 200, 130, 0.45);
+        color: #a8e6a0;
+      }
+      .ship-badge.mode[data-mode="approach"] {
+        background: rgba(110, 180, 240, 0.18);
+        border-color: rgba(110, 180, 240, 0.45);
+        color: #a4cdf8;
+      }
+      .ship-badge.mode[data-mode="high"] {
+        background: rgba(255, 180, 90, 0.18);
+        border-color: rgba(255, 180, 90, 0.45);
+        color: #ffce8a;
+      }
+      .ship-badge.mode[data-mode="warp"] {
+        background: rgba(220, 130, 255, 0.22);
+        border-color: rgba(220, 130, 255, 0.55);
+        color: #e6b5ff;
+        text-shadow: 0 0 6px rgba(220, 130, 255, 0.5);
+      }
+      .ship-hud-help {
+        position: absolute; top: 180px; right: 12px;
+        max-width: 220px;
+        background: rgba(8, 12, 22, 0.78);
+        border: 1px solid rgba(110, 170, 240, 0.28);
+        border-radius: 6px;
+        padding: 8px 10px;
+        backdrop-filter: blur(4px);
+        font-size: 10.5px;
+        color: #9eb6d5;
+        line-height: 1.45;
+      }
+      .ship-help-title {
+        font-size: 9.5px; letter-spacing: 2px;
+        color: #6a8cba; margin-bottom: 5px;
+        border-bottom: 1px solid rgba(110, 170, 240, 0.18);
+        padding-bottom: 4px;
+      }
+      .ship-help-row {
+        display: grid; grid-template-columns: 56px 1fr;
+        gap: 8px; align-items: center;
+      }
+      .ship-help-k {
+        font-family: ui-monospace, monospace;
+        font-size: 10px; color: #c5e1ff;
+        background: rgba(74, 141, 246, 0.14);
+        border: 1px solid rgba(120, 170, 240, 0.28);
+        border-radius: 3px;
+        padding: 0 4px; text-align: center;
+        white-space: nowrap;
       }
       .ship-target-bracket {
         position: absolute;

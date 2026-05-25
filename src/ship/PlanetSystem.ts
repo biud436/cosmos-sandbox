@@ -102,12 +102,16 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
   else if (mass < 40) count = 4 + Math.floor(rng() * 4);
   else                count = 5 + Math.floor(rng() * 5);
 
-  // Inner edge sits well outside the star (the largest gas giants are ~1.5u
-  // so we need ~2× that clearance from the star's surface). Outer edge stays
-  // within reasonable visit range — far planets at 30-60u are still findable.
+  // Inner edge sits well outside the star's visual extent. Stars in this
+  // build draw at ~4× their physics radius (see Scene.ts scaleBoost), so the
+  // innermost planet needs ≥6× to read as orbiting *around* the star instead
+  // of clipping into the corona. Outer edge stays within reasonable visit
+  // range — far planets at 30-60u are still findable.
   const innerR = eff.type === 'blackhole'
     ? eff.radius * 14
-    : eff.radius * (4.5 + rng() * 3.0);
+    : eff.type === 'star'
+      ? eff.radius * (8 + rng() * 5.0)        // 8-13× eff.radius (~2-3× visual)
+      : eff.radius * (4.5 + rng() * 3.0);     // neutron stars: tight
   const outerR = innerR * (3 + rng() * 3);
 
   const planets: Planet[] = [];

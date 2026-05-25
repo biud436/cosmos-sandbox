@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
-import { PlanetSystem } from './PlanetSystem';
+import { PlanetClass, PlanetSystem } from './PlanetSystem';
 import { createPlanetMaterial, PlanetMaterialHandle } from './PlanetShader';
 
 // Renders the procedural planets for a single visited star. Each instance
@@ -8,8 +8,89 @@ import { createPlanetMaterial, PlanetMaterialHandle } from './PlanetShader';
 // evicts. Planet positions are advanced from shipProperTime (passed each
 // frame to update()), so they don't smear when the user dilates cosmic time.
 
-const SPHERE_GEOM = new THREE.SphereGeometry(1, 12, 10);
+// 48×32 is high enough that close-flyby silhouettes don't read as facets
+// while still cheap for ~10 planets per system.
+const SPHERE_GEOM = new THREE.SphereGeometry(1, 48, 32);
+const ATMOSPHERE_GEOM = new THREE.SphereGeometry(1, 32, 24);
 const ORBIT_SEGMENTS = 96;
+
+// Per-class atmosphere settings. `null` = airless (lava planets stay bare).
+//   tint: rim color
+//   thickness: scales rim alpha — thicker for gaseous/oceanic worlds.
+//   scale: shell radius relative to planet (1.05 = 5% larger).
+function atmosphereOf(cls: PlanetClass): { tint: THREE.Color; thickness: number; scale: number } | null {
+  switch (cls) {
+    case 'lava':   return null;
+    case 'rock':   return { tint: new THREE.Color(0.72, 0.78, 0.92), thickness: 0.45, scale: 1.03 };
+    case 'desert': return { tint: new THREE.Color(0.98, 0.78, 0.55), thickness: 0.80, scale: 1.05 };
+    case 'ocean':  return { tint: new THREE.Color(0.55, 0.78, 1.00), thickness: 1.10, scale: 1.06 };
+    case 'ice':    return { tint: new THREE.Color(0.82, 0.92, 1.00), thickness: 0.35, scale: 1.025 };
+    case 'gas':    return { tint: new THREE.Color(0.95, 0.85, 0.65), thickness: 1.00, scale: 1.04 };
+  }
+}
+
+interface AtmosphereHandle {
+  mesh: THREE.Mesh;
+  material: THREE.ShaderMaterial;
+  uSunDir: { value: THREE.Vector3 };
+  uHasSun: { value: number };
+}
+
+function createAtmosphereMaterial(tint: THREE.Color, thickness: number, hasSun: boolean): AtmosphereHandle {
+  const uSunDir = { value: new THREE.Vector3(1, 0, 0) };
+  const uHasSun = { value: hasSun ? 1 : 0 };
+  const material = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uColor: { value: tint },
+      uThickness: { value: thickness },
+      uSunDir,
+      uHasSun,
+    },
+    // We compute everything in world space so the sun direction (a world-space
+    // vector pointing from planet → host star) lines up with the geometric
+    // normal of the shell directly. BackSide lets us see the dome from inside
+    // when the camera is close, while the additive blend over fresnel gives
+    // the classic limb-glow look.
+    vertexShader: /* glsl */`
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vWorldNormal;
+      varying vec3 vWorldPos;
+      uniform vec3 uColor;
+      uniform float uThickness;
+      uniform vec3 uSunDir;
+      uniform float uHasSun;
+      void main() {
+        vec3 N = normalize(vWorldNormal);
+        vec3 V = normalize(cameraPosition - vWorldPos);
+        float NdotV = abs(dot(N, V));
+        // Sharp rim falloff — pow(1-NdotV, 2.5) keeps the dome subtle in the
+        // middle and bright at the limb.
+        float rim = pow(1.0 - NdotV, 2.5);
+        // Day-side bias: scattering brightest where the planet faces the star,
+        // dimmest at midnight. Without a sun (BH/NS host), we skip the bias.
+        float day = mix(1.0, max(dot(N, uSunDir), 0.0) * 0.85 + 0.15, uHasSun);
+        float a = rim * day * uThickness * 0.85;
+        gl_FragColor = vec4(uColor, clamp(a, 0.0, 0.95));
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(ATMOSPHERE_GEOM, material);
+  mesh.frustumCulled = false;
+  return { mesh, material, uSunDir, uHasSun };
+}
 
 export class StarSystemView {
   readonly group: THREE.Group;
@@ -17,6 +98,10 @@ export class StarSystemView {
   private readonly orbitLines: THREE.LineLoop[] = [];
   private readonly planetMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly planetHandles: PlanetMaterialHandle[] = [];
+  // Parallel array, one per planet — `null` for airless (lava). Atmosphere
+  // meshes are children of their planet mesh so they inherit position; we
+  // counter the parent's spin/tilt by clearing local rotation on the shell.
+  private readonly atmospheres: (AtmosphereHandle | null)[] = [];
   private readonly orbitMaterial: THREE.LineBasicMaterial;
   private readonly system: PlanetSystem;
   private readonly host: Effector;
@@ -66,6 +151,22 @@ export class StarSystemView {
       this.planetMaterials.push(handle.material);
       this.planetHandles.push(handle);
 
+      // Atmosphere shell — parented to the planet mesh so position tracking
+      // is free, but we drop its inherited rotation by setting it as a peer
+      // child of the group instead. We use a peer-child so the atmosphere
+      // doesn't spin with the planet (atmospheres are visually invariant
+      // under rotation; we just want the position to track).
+      const atmoSpec = atmosphereOf(planet.planetClass);
+      if (atmoSpec) {
+        const hasSun = this.host.type === 'star';
+        const atmo = createAtmosphereMaterial(atmoSpec.tint, atmoSpec.thickness, hasSun);
+        atmo.mesh.scale.setScalar(planet.visualRadius * atmoSpec.scale);
+        this.group.add(atmo.mesh);
+        this.atmospheres.push(atmo);
+      } else {
+        this.atmospheres.push(null);
+      }
+
       this.orbitLines.push(this.makeOrbitLine(planet.orbitRadius, planet.inclination));
       this.group.add(this.orbitLines[this.orbitLines.length - 1]);
     }
@@ -102,6 +203,7 @@ export class StarSystemView {
     this.group.position.set(this.host.x, this.host.y, this.host.z);
 
     const tmp = new THREE.Vector3();
+    const sunWorld = new THREE.Vector3();
     for (let i = 0; i < this.system.planets.length; i++) {
       const p = this.system.planets[i];
       const mesh = this.planetMeshes[i];
@@ -114,6 +216,17 @@ export class StarSystemView {
 
       // Self-rotation. Tilt is baked into rotation.x; spin advances .y.
       mesh.rotation.y = (shipTime / p.spinPeriodSec) * Math.PI * 2;
+
+      // Atmosphere tracks position (no rotation needed — sphere is invariant).
+      // Sun direction is the unit vector from the planet to the host star.
+      // Host sits at group origin, so in group-local coords this is just
+      // -mesh.position normalized; group has no rotation, so it matches world.
+      const atmo = this.atmospheres[i];
+      if (atmo) {
+        atmo.mesh.position.copy(mesh.position);
+        sunWorld.copy(mesh.position).multiplyScalar(-1).normalize();
+        atmo.uSunDir.value.copy(sunWorld);
+      }
 
       const handle = this.planetHandles[i];
       handle.setTime(shipTime);
@@ -140,6 +253,7 @@ export class StarSystemView {
    * dispose per-instance materials and orbit-line geometries. */
   dispose(): void {
     for (const m of this.planetMaterials) m.dispose();
+    for (const a of this.atmospheres) if (a) a.material.dispose();
     for (const l of this.orbitLines) l.geometry.dispose();
     this.orbitMaterial.dispose();
     this.group.parent?.remove(this.group);
