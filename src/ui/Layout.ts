@@ -27,6 +27,7 @@ export class Layout {
   private readonly btnPause = document.getElementById('btn-pause') as HTMLButtonElement;
   private readonly btnStep = document.getElementById('btn-step') as HTMLButtonElement;
   private readonly btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
+  private readonly btnShip = document.getElementById('btn-ship') as HTMLButtonElement;
   private readonly timeScaleSelect = document.getElementById('time-scale') as HTMLSelectElement;
   private readonly eventLog = document.getElementById('event-log')!;
 
@@ -160,6 +161,7 @@ export class Layout {
     onReset: () => void;
     onTimeScale: (scale: number) => void;
     onToggleOrbits?: () => void;
+    onToggleShip?: () => boolean;
   }): void {
     this.presetSelect.innerHTML = '';
     for (const name of opts.presets) {
@@ -184,6 +186,12 @@ export class Layout {
     });
     this.btnStep.addEventListener('click', () => opts.onStep());
     this.btnReset.addEventListener('click', () => opts.onReset());
+    if (opts.onToggleShip && this.btnShip) {
+      this.btnShip.addEventListener('click', () => {
+        const isShip = opts.onToggleShip!();
+        this.setShipUI(isShip);
+      });
+    }
 
     window.addEventListener('keydown', (e) => {
       const t = e.target as HTMLElement | null;
@@ -205,6 +213,12 @@ export class Layout {
   private setPausedUI(paused: boolean): void {
     this.btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';
     this.btnStep.disabled = !paused;
+  }
+
+  setShipUI(isShipMode: boolean): void {
+    if (!this.btnShip) return;
+    this.btnShip.textContent = isShipMode ? '시뮬 복귀' : '우주선 조종';
+    this.btnShip.title = isShipMode ? '시뮬레이션 시점으로 복귀' : '우주선 조종 모드로 전환';
   }
 
   setPreset(name: string): void {

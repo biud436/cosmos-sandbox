@@ -82,6 +82,10 @@ export interface CosmicEvent {
 export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer' | 'nebula' | 'neutron_star';
 
 export interface Effector {
+  /** Monotonic, stable for the effector's lifetime. Used as a seed key for
+   * procedural artifacts (planet systems) and as the identity in the
+   * spaceship-mode dex. Survives mergers only on the surviving effector. */
+  id: number;
   type: EffectorType;
   x: number;
   y: number;
@@ -264,6 +268,7 @@ export class Simulator {
   starCounter = 0;
   bhCounter = 0;
   nsCounter = 0;
+  private nextEffectorId = 1;
 
   private grid: SpatialGrid;
   bh: BarnesHut;
@@ -727,6 +732,7 @@ export class Simulator {
     };
     const p = presets[type];
     const e: Effector = {
+      id: this.nextEffectorId++,
       type, x, y, z,
       vx: 0, vy: 0, vz: 0,
       radius: p.radius, strength: p.strength, consumed: 0,

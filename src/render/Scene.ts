@@ -96,6 +96,11 @@ export class Scene {
   private gasColors: Float32Array | null = null;
   private gasSizes: Float32Array | null = null;
   private readonly maxParticlesTotal: number;
+  // Far-field starfield + nebula. Parented to a group that tracks the camera
+  // each frame so the player always feels surrounded — otherwise far zooms
+  // or Hubble expansion push the camera outside the fixed-radius shell and
+  // half the sky goes dark.
+  private skyGroup: THREE.Group | null = null;
 
   constructor(container: HTMLElement, boxHalf: number, maxPerSpecies: number) {
     this.boxHalf = boxHalf;
@@ -103,7 +108,10 @@ export class Scene {
     this.maxParticlesTotal = maxPerSpecies * SPECIES.length;
 
     this.scene = new THREE.Scene();
-    this.scene.background = this.makeGradientBackground();
+    // Flat dark color — the omnidirectional starfield/nebula provides depth,
+    // and a directional gradient would re-introduce the "one face dark" bug
+    // when the camera looks outward in spaceship mode.
+    this.scene.background = new THREE.Color(0x02030a);
 
     this.camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, boxHalf * 80);
     this.camera.position.set(boxHalf * 1.6, boxHalf * 1.1, boxHalf * 1.6);
@@ -130,24 +138,11 @@ export class Scene {
     ro.observe(container);
   }
 
-  private makeGradientBackground(): THREE.CanvasTexture {
-    const canvas = document.createElement('canvas');
-    canvas.width = 4;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d')!;
-    const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    g.addColorStop(0.0, '#0a0b18');
-    g.addColorStop(0.4, '#0c0a1e');
-    g.addColorStop(0.7, '#08070f');
-    g.addColorStop(1.0, '#02020a');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
-  }
-
   private buildStarfield(): void {
+    const skyGroup = new THREE.Group();
+    skyGroup.frustumCulled = false;
+    this.scene.add(skyGroup);
+    this.skyGroup = skyGroup;
     const farR = this.boxHalf * 18;
     const count = 1800;
     const positions = new Float32Array(count * 3);
@@ -185,7 +180,7 @@ export class Scene {
     });
     const stars = new THREE.Points(geo, mat);
     stars.frustumCulled = false;
-    this.scene.add(stars);
+    skyGroup.add(stars);
 
     const nebulaGeo = new THREE.SphereGeometry(farR * 0.95, 32, 16);
     const nebulaMat = new THREE.ShaderMaterial({
@@ -229,7 +224,7 @@ export class Scene {
     });
     const nebula = new THREE.Mesh(nebulaGeo, nebulaMat);
     nebula.frustumCulled = false;
-    this.scene.add(nebula);
+    skyGroup.add(nebula);
   }
 
   private buildUniverseBoundary(): void {
@@ -1745,9 +1740,48 @@ export class Scene {
     requestAnimationFrame(animate);
   }
 
+  /**
+   * Active camera controller mode. In 'ship' mode OrbitControls is disabled
+   * so the ShipController (which lives outside Scene) can drive the camera
+   * directly without fighting damping. Selection follow is also suspended.
+   */
+  setControllerMode(mode: 'orbit' | 'ship'): void {
+    if (mode === 'ship') {
+      this.controls.enabled = false;
+      this.followAnchor = null;
+    } else {
+      this.controls.enabled = true;
+      // After taking back control, point OrbitControls at whatever the
+      // camera is currently looking at (~1 unit in front), so the user
+      // doesn't snap to the old origin target.
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      this.controls.target.copy(this.camera.position).addScaledVector(dir, 10);
+      this.controls.update();
+    }
+  }
+
+  /** Find the nearest star/NS/BH effector to a world-space point. */
+  nearestStar(sim: Simulator, point: THREE.Vector3): { eff: Effector; distance: number } | null {
+    let best: Effector | null = null;
+    let bestD = Infinity;
+    for (const e of sim.effectors) {
+      if (e.type !== 'star' && e.type !== 'neutron_star' && e.type !== 'blackhole') continue;
+      const dx = e.x - point.x;
+      const dy = e.y - point.y;
+      const dz = e.z - point.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < bestD) { bestD = d2; best = e; }
+    }
+    return best ? { eff: best, distance: Math.sqrt(bestD) } : null;
+  }
+
   render(): void {
-    this.updateCameraFollow();
-    this.controls.update();
+    if (this.controls.enabled) {
+      this.updateCameraFollow();
+      this.controls.update();
+    }
+    if (this.skyGroup) this.skyGroup.position.copy(this.camera.position);
     this.renderer.render(this.scene, this.camera);
   }
 
