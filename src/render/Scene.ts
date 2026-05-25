@@ -31,7 +31,7 @@ export class Scene {
     galaxies: true,
     nebulae: true,
   };
-  private galaxyHalos = new Map<Effector, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
+  private galaxyHalos = new Map<string, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
   private selectedOrbitLines: THREE.LineSegments | null = null;
   private selectedOrbitGeom: THREE.BufferGeometry | null = null;
   private selectedOrbitPositions: Float32Array | null = null;
@@ -759,6 +759,14 @@ export class Scene {
 
   private _trailLinearScratch: Float32Array | null = null;
 
+  // Galaxy = a gravitationally-associated cluster of stars (with optional
+  // central/embedded BHs). Detected via union-find linkage: two stars are
+  // linked if within `galaxyLinkRadius` of each other. A connected component
+  // of >= `galaxyMinStars` is rendered as a single diffuse halo. This drops
+  // the previous "halo per BH" assumption (real galaxies don't need a BH,
+  // and post-merger galaxies have multiple BHs inside one halo).
+  private readonly galaxyLinkRadius = 12;
+  private readonly galaxyMinStars = 4;
   private syncGalaxies(sim: Simulator): void {
     const stars: Effector[] = [];
     const bhs: Effector[] = [];
@@ -766,97 +774,169 @@ export class Scene {
       if (e.type === 'star') stars.push(e);
       else if (e.type === 'blackhole') bhs.push(e);
     }
-    const alive = new Set<Effector>(bhs);
 
-    const maxR = new Map<Effector, number>();
-    const starCount = new Map<Effector, number>();
-    for (const s of stars) {
-      let host: Effector | null = null;
-      let bestD2 = Infinity;
-      for (const bh of bhs) {
-        if (bh.strength < s.strength * 1.5) continue;
-        const dx = s.x - bh.x;
-        const dy = s.y - bh.y;
-        const dz = s.z - bh.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < bestD2) {
-          bestD2 = d2;
-          host = bh;
+    // Find seen halo IDs this frame so we can reap stale ones at the end
+    const seenIds = new Set<string>();
+
+    if (stars.length >= this.galaxyMinStars) {
+      const n = stars.length;
+      const parent = new Int32Array(n);
+      for (let i = 0; i < n; i++) parent[i] = i;
+      const find = (x: number): number => {
+        while (parent[x] !== x) {
+          parent[x] = parent[parent[x]];
+          x = parent[x];
+        }
+        return x;
+      };
+      const linkR2 = this.galaxyLinkRadius * this.galaxyLinkRadius;
+      for (let i = 0; i < n; i++) {
+        const a = stars[i];
+        for (let j = i + 1; j < n; j++) {
+          const b = stars[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const dz = a.z - b.z;
+          if (dx * dx + dy * dy + dz * dz < linkR2) {
+            const ra = find(i), rb = find(j);
+            if (ra !== rb) parent[ra] = rb;
+          }
         }
       }
-      if (!host) continue;
-      const r = Math.sqrt(bestD2);
-      const cur = maxR.get(host) ?? 0;
-      if (r > cur) maxR.set(host, r);
-      starCount.set(host, (starCount.get(host) ?? 0) + 1);
-    }
 
-    for (const bh of bhs) {
-      const count = starCount.get(bh) ?? 0;
-      if (count < 3) {
-        const existing = this.galaxyHalos.get(bh);
-        if (existing) {
-          this.scene.remove(existing.mesh);
-          this.galaxyHalos.delete(bh);
+      const components = new Map<number, number[]>();
+      for (let i = 0; i < n; i++) {
+        const r = find(i);
+        const list = components.get(r);
+        if (list) list.push(i); else components.set(r, [i]);
+      }
+
+      for (const [, memberIdx] of components) {
+        if (memberIdx.length < this.galaxyMinStars) continue;
+
+        // Stable ID = oldest member's birth time (galaxies don't lose identity
+        // when newer members join or old peripheral members drift away).
+        let oldest = stars[memberIdx[0]];
+        for (const i of memberIdx) {
+          if (stars[i].bornAt < oldest.bornAt) oldest = stars[i];
         }
-        continue;
+        const id = `g-${Math.round(oldest.bornAt * 1000)}-${oldest.name ?? ''}`;
+        seenIds.add(id);
+
+        // Mass-weighted COM
+        let cx = 0, cy = 0, cz = 0, totM = 0;
+        for (const i of memberIdx) {
+          const s = stars[i];
+          cx += s.x * s.strength;
+          cy += s.y * s.strength;
+          cz += s.z * s.strength;
+          totM += s.strength;
+        }
+        if (totM <= 0) continue;
+        cx /= totM; cy /= totM; cz /= totM;
+
+        // Include nearby BHs in COM (they sit at galactic centers) and let
+        // them contribute to the halo extent — a post-merger galaxy with
+        // multiple BHs still reads as one halo.
+        const localBhs: Effector[] = [];
+        let bhM = 0;
+        for (const bh of bhs) {
+          const dx = bh.x - cx, dy = bh.y - cy, dz = bh.z - cz;
+          if (dx * dx + dy * dy + dz * dz < linkR2 * 2.25) {
+            localBhs.push(bh);
+            bhM += bh.strength;
+          }
+        }
+        if (localBhs.length > 0) {
+          // Re-center using BH mass too
+          let ncx = cx * totM, ncy = cy * totM, ncz = cz * totM;
+          for (const bh of localBhs) {
+            ncx += bh.x * bh.strength;
+            ncy += bh.y * bh.strength;
+            ncz += bh.z * bh.strength;
+          }
+          const total = totM + bhM;
+          cx = ncx / total; cy = ncy / total; cz = ncz / total;
+        }
+
+        // Radius = RMS distance of stars from COM, with a min floor.
+        // RMS is robust against single eccentric-orbit outliers (vs. max).
+        let sumR2 = 0;
+        for (const i of memberIdx) {
+          const s = stars[i];
+          const dx = s.x - cx;
+          const dy = s.y - cy;
+          const dz = s.z - cz;
+          sumR2 += dx * dx + dy * dy + dz * dz;
+        }
+        const rmsR = Math.sqrt(sumR2 / memberIdx.length);
+        const radius = Math.max(3.0, rmsR * 1.6 + 1.5);
+
+        let entry = this.galaxyHalos.get(id);
+        if (!entry) {
+          const hue = (this.hashGalaxyId(id) % 360) / 360;
+          const color = new THREE.Color().setHSL(hue, 0.55, 0.55);
+          entry = this.createGalaxyHalo(color);
+          this.galaxyHalos.set(id, entry);
+        }
+        entry.mesh.position.set(cx, cy, cz);
+        entry.mesh.scale.setScalar(radius);
+        this.tmpSphere.center.set(cx, cy, cz);
+        this.tmpSphere.radius = radius;
+        entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
       }
-      let entry = this.galaxyHalos.get(bh);
-      if (!entry) {
-        const hue = (this.hashEffector(bh) % 360) / 360;
-        const color = new THREE.Color().setHSL(hue, 0.55, 0.55);
-        const geo = new THREE.SphereGeometry(1, 32, 24);
-        const mat = new THREE.ShaderMaterial({
-          side: THREE.BackSide,
-          transparent: true,
-          depthWrite: false,
-          uniforms: { uColor: { value: color } },
-          vertexShader: `
-            varying vec3 vN; varying vec3 vView;
-            void main() {
-              vec4 mv = modelViewMatrix * vec4(position, 1.0);
-              vN = normalize(normalMatrix * normal);
-              vView = normalize(-mv.xyz);
-              gl_Position = projectionMatrix * mv;
-            }
-          `,
-          fragmentShader: `
-            varying vec3 vN; varying vec3 vView;
-            uniform vec3 uColor;
-            void main() {
-              float facing = abs(dot(vN, vView));
-              float interior = 0.06 * (0.5 + 0.5 * facing);
-              float rim = pow(1.0 - facing, 2.2) * 0.40;
-              gl_FragColor = vec4(uColor, interior + rim);
-            }
-          `,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.frustumCulled = false;
-        mesh.visible = this.visibility.galaxies;
-        this.scene.add(mesh);
-        entry = { mesh, mat };
-        this.galaxyHalos.set(bh, entry);
-      }
-      entry.mesh.position.set(bh.x, bh.y, bh.z);
-      const radius = Math.max(2.5, (maxR.get(bh) ?? 4) * 1.15);
-      entry.mesh.scale.setScalar(radius);
-      this.tmpSphere.center.set(bh.x, bh.y, bh.z);
-      this.tmpSphere.radius = radius;
-      entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
     }
 
-    for (const [bh, entry] of this.galaxyHalos) {
-      if (!alive.has(bh)) {
+    for (const [id, entry] of this.galaxyHalos) {
+      if (!seenIds.has(id)) {
         this.scene.remove(entry.mesh);
-        this.galaxyHalos.delete(bh);
+        entry.mesh.geometry.dispose();
+        entry.mat.dispose();
+        this.galaxyHalos.delete(id);
       }
     }
   }
 
-  private hashEffector(e: Effector): number {
-    const k = Math.floor(e.bornAt * 1000) ^ Math.floor((e.x + 100) * 13) ^ Math.floor((e.y + 100) * 31);
-    return ((k * 2654435761) >>> 0) & 0xffffff;
+  private createGalaxyHalo(color: THREE.Color): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial } {
+    const geo = new THREE.SphereGeometry(1, 32, 24);
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      transparent: true,
+      depthWrite: false,
+      uniforms: { uColor: { value: color } },
+      vertexShader: `
+        varying vec3 vN; varying vec3 vView;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vN = normalize(normalMatrix * normal);
+          vView = normalize(-mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vN; varying vec3 vView;
+        uniform vec3 uColor;
+        void main() {
+          float facing = abs(dot(vN, vView));
+          float interior = 0.06 * (0.5 + 0.5 * facing);
+          float rim = pow(1.0 - facing, 2.2) * 0.40;
+          gl_FragColor = vec4(uColor, interior + rim);
+        }
+      `,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.visible = this.visibility.galaxies;
+    this.scene.add(mesh);
+    return { mesh, mat };
+  }
+
+  private hashGalaxyId(id: string): number {
+    let h = 5381;
+    for (let i = 0; i < id.length; i++) {
+      h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
+    }
+    return h & 0xffffff;
   }
 
   private syncOrbits(sim: Simulator): void {
