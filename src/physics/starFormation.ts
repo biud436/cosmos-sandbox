@@ -253,6 +253,11 @@ export function spawnStarFromCluster(sim: Simulator, indices: number[]): Effecto
   }
   eff.strength = Math.min(320, Math.max(6, baseMass * imfBoost));
   eff.radius = Math.min(3.2, Math.max(0.7, Math.cbrt(eff.strength / 30) * 0.95));
+
+  // Inherit the ISM metallicity at the moment of birth. Stars born from
+  // pristine gas (early universe) get Z≈0; stars born after many SNe get Z↑.
+  eff.metallicity = sim.globalMetallicity;
+
   sim.starsFormed++;
   sim.onStarFormation?.([cx, cy, cz], indices.length);
   return eff;
@@ -538,6 +543,11 @@ export function ejectSupernovaParticles(sim: Simulator, x: number, y: number, z:
   if (dustId >= 0) { speciesPool.push(dustId); }
   const sprinkleGold = auId >= 0 && Math.random() < 0.18;
   if (speciesPool.length === 0) return;
+
+  // Track cumulative metal output for chemical evolution. Everything ejected
+  // by a SN counts as enrichment (in our species mix even He acts as a
+  // visual stand-in for "stuff heavier than primordial H").
+  sim.metalMass += ejectaMass;
 
   const count = Math.max(4, Math.min(40, Math.floor(ejectaMass * sim.supernovaEjectaCountFactor)));
   const baseSpeed = sim.supernovaEjectaSpeed;

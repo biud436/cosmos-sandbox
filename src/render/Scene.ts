@@ -16,6 +16,20 @@ function spectralColor(mass: number): [number, number, number] {
   return            [0.65, 0.80, 1.00];      // O/Wolf-Rayet (~30000K+)
 }
 
+// Metallicity tint: low-Z (Pop III) stars have less metal-line opacity in
+// the photosphere → photosphere appears subtly bluer at the same effective
+// temperature. High-Z stars look slightly warmer/redder. Effect is intentionally
+// subtle so the dominant color signal stays the spectral class.
+function applyMetallicityTint(rgb: [number, number, number], Z: number): [number, number, number] {
+  // Map Z ∈ [0, 1] to t ∈ [-1, +1] (pristine → enriched)
+  const t = Z * 2 - 1;
+  return [
+    rgb[0] * (1 + t * 0.08),
+    rgb[1] * (1 - t * 0.02),
+    rgb[2] * (1 - t * 0.08),
+  ];
+}
+
 export class Scene {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
@@ -1203,12 +1217,13 @@ export class Scene {
         view.mat.uniforms.uMass.value = eff.strength;
       }
 
-      // Stellar spectral type: outer color follows the star's mass-derived
-      // effective temperature. Massive (≥80) stars are blue-white; mid stars
-      // white/yellow; low-mass red. Mirrors O/B/A/F/G/K/M classification.
+      // Stellar spectral type + metallicity tint: outer color follows the
+      // star's mass-derived effective temperature, with a subtle blue shift
+      // for Pop III (Z=0) and warm shift for late-generation Pop I.
       if (eff.type === 'star' && view.mat.uniforms.uColor) {
-        const col = spectralColor(eff.strength);
-        (view.mat.uniforms.uColor.value as THREE.Color).setRGB(col[0], col[1], col[2]);
+        const spectral = spectralColor(eff.strength);
+        const tinted = applyMetallicityTint(spectral, eff.metallicity ?? 0);
+        (view.mat.uniforms.uColor.value as THREE.Color).setRGB(tinted[0], tinted[1], tinted[2]);
       }
 
       // BH accretion activity: low-pass filter of consumed-per-frame so the

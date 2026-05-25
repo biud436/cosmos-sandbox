@@ -67,6 +67,9 @@ export interface Effector {
   consumed: number;
   name?: string;
   bornAt: number;
+  // Birth metallicity for stars (0 = Pop III pristine, ~1 = Pop I enriched).
+  // Inherited from the global ISM metallicity at the moment of formation.
+  metallicity?: number;
 }
 
 interface PairParams {
@@ -112,6 +115,13 @@ export class Simulator {
   // central concentration of stars/BHs instead of letting BHs eat everything.
   applyEffectorHubbleFlow = false;
   scaleFactor = 1.0;
+
+  // Chemical evolution: cumulative metal mass ejected by supernovae. New
+  // stars inherit a metallicity proxy = metalMass / (metalMass + scaleRef)
+  // so Pop III stars (formed when nothing has died yet) are pristine, and
+  // late-generation stars get progressively enriched.
+  metalMass = 0;
+  metallicityScale = 200;
   openBoundary = false;
   starFormationEnabled = false;
   starFormationRadius = 1.4;
@@ -214,6 +224,12 @@ export class Simulator {
   private readonly bondCount: Uint8Array;
   private readonly maxBonds: number;
 
+  // Normalized 0..1 metallicity from cumulative SN ejecta. Saturates so even
+  // a runaway-SN universe doesn't push past 1.
+  get globalMetallicity(): number {
+    return this.metalMass / (this.metalMass + this.metallicityScale);
+  }
+
   constructor(opts: SimulatorOptions) {
     this.boxHalf = opts.boxHalf;
     this.cutoff = opts.cutoff;
@@ -275,6 +291,7 @@ export class Simulator {
     this.starFormationTimer = 0;
     this.nebulaFormationTimer = 0;
     this.nebulaCounter = 0;
+    this.metalMass = 0;
     this.scaleFactor = 1.0;
     this.firedEventCount = 0;
     this.firedEvents = [];
