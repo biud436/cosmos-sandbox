@@ -184,25 +184,58 @@ export class Controls {
   private buildVisibilityFolder(): void {
     const folder = this.gui.addFolder('시야 — 실시간');
     this.markFolder(folder, 'runtime');
-    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies' | 'nebulae' | 'neutronStars'; label: string }[] = [
-      { key: 'particles', label: '입자' },
-      { key: 'bonds', label: '결합' },
-      { key: 'nebulae', label: '성운' },
-      { key: 'stars', label: '별' },
-      { key: 'neutronStars', label: '중성자별' },
-      { key: 'blackholes', label: '블랙홀' },
-      { key: 'galaxies', label: '은하 헤일로' },
-      { key: 'repulsors', label: '반발자' },
-      { key: 'freezers', label: '동결자' },
-      { key: 'orbits', label: '공전 궤도' },
-      { key: 'boundary', label: '우주 경계' },
+
+    type VKey = 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes'
+              | 'repulsors' | 'freezers' | 'orbits' | 'galaxies' | 'nebulae'
+              | 'neutronStars';
+    type Group = { folderName: string; entries: { key: VKey; label: string }[] };
+
+    // Grouped to keep the flat list of 11 toggles legible. The categories
+    // mirror the physical hierarchy: bound systems → compact bodies →
+    // raw matter → sandbox tools/extras.
+    const groups: Group[] = [
+      {
+        folderName: '🌌 우주 구조',
+        entries: [
+          { key: 'galaxies', label: '은하 헤일로' },
+          { key: 'nebulae',  label: '성운' },
+          { key: 'boundary', label: '우주 경계' },
+        ],
+      },
+      {
+        folderName: '✨ 천체',
+        entries: [
+          { key: 'stars',         label: '별' },
+          { key: 'neutronStars',  label: '중성자별' },
+          { key: 'blackholes',    label: '블랙홀' },
+        ],
+      },
+      {
+        folderName: '🧬 물질',
+        entries: [
+          { key: 'particles', label: '입자' },
+          { key: 'bonds',     label: '결합' },
+        ],
+      },
+      {
+        folderName: '🛠 도구 · 분석',
+        entries: [
+          { key: 'orbits',    label: '공전 궤도' },
+          { key: 'repulsors', label: '반발자' },
+          { key: 'freezers',  label: '동결자' },
+        ],
+      },
     ];
+
     for (const g of groups) {
-      const proxy = { v: this.scene.isVisible(g.key) };
-      folder
-        .add(proxy, 'v')
-        .name(g.label)
-        .onChange((val: boolean) => this.scene.setVisibility(g.key, val));
+      const sub = folder.addFolder(g.folderName);
+      for (const entry of g.entries) {
+        const proxy = { v: this.scene.isVisible(entry.key) };
+        sub
+          .add(proxy, 'v')
+          .name(entry.label)
+          .onChange((val: boolean) => this.scene.setVisibility(entry.key, val));
+      }
     }
   }
 
