@@ -239,7 +239,7 @@ export class Scene {
     const edgesMat = new THREE.LineBasicMaterial({
       color: 0x44ddff,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.55,
       depthWrite: false,
     });
     const wire = new THREE.LineSegments(edgesGeo, edgesMat);
@@ -272,7 +272,11 @@ export class Scene {
         uniform vec3 uColor;
         void main() {
           float rim = 1.0 - max(dot(normalize(vNormal), normalize(vViewDir)), 0.0);
-          float a = pow(rim, 4.0) * 0.18;
+          // Stronger rim glow + a base interior tint so the boundary stays
+          // legible even when zoomed far out (post-Hubble universe is large).
+          float rimGlow = pow(rim, 2.5) * 0.42;
+          float interior = 0.025;
+          float a = rimGlow + interior;
           gl_FragColor = vec4(uColor, a);
         }
       `,
@@ -1576,6 +1580,43 @@ export class Scene {
 
   setSelectedEffector(eff: Effector | null): void {
     this.selectedEffector = eff;
+    if (!eff) {
+      this.followAnchor = null;
+      return;
+    }
+    // If a focus animation isn't currently running the follow lock should
+    // start immediately. Otherwise the animation hands the anchor off when
+    // it completes (see focusInternal).
+    if (this.focusAnimationId === null) {
+      this.followAnchor = new THREE.Vector3(eff.x, eff.y, eff.z);
+    }
+  }
+
+  // Camera lock-on: once an effector is selected, the camera tracks its
+  // motion every frame so the user can keep watching it. The anchor stores
+  // where the effector was last frame so we can apply the delta to both the
+  // OrbitControls target and the camera position — preserving the user's
+  // current orbit/zoom relative to the body.
+  private followAnchor: THREE.Vector3 | null = null;
+
+  private updateCameraFollow(): void {
+    const eff = this.selectedEffector;
+    if (!eff || !this.followAnchor) return;
+    if (this.focusAnimationId !== null) return;
+
+    const dx = eff.x - this.followAnchor.x;
+    const dy = eff.y - this.followAnchor.y;
+    const dz = eff.z - this.followAnchor.z;
+    if (dx === 0 && dy === 0 && dz === 0) return;
+
+    this.controls.target.x += dx;
+    this.controls.target.y += dy;
+    this.controls.target.z += dz;
+    this.camera.position.x += dx;
+    this.camera.position.y += dy;
+    this.camera.position.z += dz;
+
+    this.followAnchor.set(eff.x, eff.y, eff.z);
   }
 
   private focusAnimationId: number | null = null;
@@ -1617,6 +1658,10 @@ export class Scene {
         this.controls.target.copy(liveTarget);
         this.camera.position.copy(liveCam);
         this.focusAnimationId = null;
+        // Hand off to per-frame follow if we're focusing on the selection
+        if (this.selectedEffector) {
+          this.followAnchor = liveTarget.clone();
+        }
       }
     };
     this.focusAnimationId = requestAnimationFrame(animate);
@@ -1668,6 +1713,7 @@ export class Scene {
   }
 
   render(): void {
+    this.updateCameraFollow();
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }

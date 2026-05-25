@@ -127,12 +127,12 @@ export const PRESETS: Preset[] = [
         action: (sim) => {
           // Re-engage Hubble, but with slow decay (NOT constant H) so the
           // integrated expansion stays bounded over the multi-Gyr remainder
-          // of the simulation. Constant H = 0.015 over 700 sim sec gives
-          // exp(10.5) ~ 36000× expansion which makes everything vanish.
-          // The 0.018 rate is chosen so at the event time (t=20) the effective
-          // H = 0.018/(1+0.04·20) ≈ 0.010.
-          sim.hubbleRate = Math.max(sim.hubbleRate, 0.018);
-          sim.hubbleDecay = 0.04;
+          // of the simulation. Tuned so:
+          //   - At event time (t=20): H ≈ 0.004 (gentle re-acceleration)
+          //   - Over t=20→720: particle expansion ≈ 1.6×, effector ≈ 1.27×
+          //   - Boundary doesn't run away from where stars/BHs actually sit
+          sim.hubbleRate = Math.max(sim.hubbleRate, 0.008);
+          sim.hubbleDecay = 0.05;
           sim.applyEffectorHubbleFlow = true;
 
           // Gentle one-time radial nudge — slow dispersal
