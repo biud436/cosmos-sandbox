@@ -93,16 +93,21 @@ export interface ShipState {
 }
 
 // 실사 (realistic) mode. A toggle layered ON TOP of the propulsion-mode
-// cycle: when ON the ship always cruises at approach speed (no infinite
-// thrust), but holding Shift fires a brief warp burst — gated by a finite
-// charge gauge that refills slowly. Models the "spaceship with an actual
-// energy budget" feel the user asked for: no perpetual c-fraction cruise,
-// no instant-glide to far targets via G.
-export const REALISTIC_BASE_SPEED = 0.5;        // u/s, same as approach mode
-export const REALISTIC_BURST_SPEED = 600;       // u/s, same as warp mode
+// cycle: holding Shift fires a brief warp burst gated by a finite charge
+// gauge that refills slowly. Baseline cruise speed is whichever propulsion
+// mode the player has cycled to via Z (excluding approach — the docking
+// regime is too slow to use as cruise). The point isn't to clamp the ship
+// to one fixed slow speed but to remove infinite-warp: the gauge enforces
+// burst-and-recharge rhythm regardless of which baseline you pick.
+export const REALISTIC_BURST_SPEED = 600;       // u/s, ≈ 10c (warp speed)
 export const REALISTIC_CHARGE_FULL_SECONDS = 10; // how long to fully recharge
 export const REALISTIC_BURST_BUDGET_SECONDS = 1; // how long full charge lasts
 // → recharge rate = 1 / 10 (charge per second), drain rate = 1 / 1 = 1/s.
+
+// Cycle order while 실사 mode is active. Skips 'approach' so the player's
+// baseline can never read as immobile. If the player toggles 실사 on while
+// approach was the active mode, we auto-promote to cruise on entry.
+export const REALISTIC_ORDER: PropulsionMode[] = ['cruise', 'high', 'warp'];
 
 export class ShipController {
   private readonly camera: THREE.PerspectiveCamera;
@@ -208,10 +213,15 @@ export class ShipController {
     return this.maxSpeedOverride ?? PROPULSION_SPECS[this.propulsionMode].maxSpeed;
   }
 
-  /** Cycle to the next propulsion mode (Z key). Wraps around at the end. */
+  /** Cycle to the next propulsion mode (Z key). Wraps around at the end.
+   *  While 실사 mode is active the cycle uses REALISTIC_ORDER, which skips
+   *  approach — that's deliberate so the player's baseline never lands on
+   *  the docking-pace mode and reads as "stuck." */
   cyclePropulsionMode(delta = 1): void {
-    const i = PROPULSION_ORDER.indexOf(this.propulsionMode);
-    const next = PROPULSION_ORDER[(i + delta + PROPULSION_ORDER.length) % PROPULSION_ORDER.length];
+    const order = this.realistic ? REALISTIC_ORDER : PROPULSION_ORDER;
+    let i = order.indexOf(this.propulsionMode);
+    if (i < 0) i = 0; // happens if we just toggled into 실사 from approach
+    const next = order[(i + delta + order.length) % order.length];
     this.setPropulsionMode(next);
   }
 
@@ -247,6 +257,10 @@ export class ShipController {
       // (otherwise enabling the mode mid-flight would feel slow).
       this.warpCharge = 1.0;
       this.warpBursting = false;
+      // If baseline was approach (too slow for 실사 cruise), promote to cruise.
+      if (this.propulsionMode === 'approach') {
+        this.propulsionMode = 'cruise';
+      }
     }
     this.onRealisticToggle?.(on);
   }
@@ -480,12 +494,13 @@ export class ShipController {
               // Burst: ride the gauge down. Mark warpBursting so HUD shows it.
               this.warpCharge = Math.max(0, this.warpCharge - dt / REALISTIC_BURST_BUDGET_SECONDS);
               this.warpBursting = true;
-              desiredSpeed = REALISTIC_BURST_SPEED;
+              desiredSpeed = Math.max(REALISTIC_BURST_SPEED, this.currentMaxSpeed);
             } else {
-              // Gauge empty: creep at approach speed while it recharges.
+              // Gauge empty: cruise at the chosen baseline (not approach
+              // pace — that's too slow even for the in-between sections).
               this.warpCharge = Math.min(1, this.warpCharge + dt / REALISTIC_CHARGE_FULL_SECONDS);
               this.warpBursting = false;
-              desiredSpeed = REALISTIC_BASE_SPEED;
+              desiredSpeed = this.currentMaxSpeed;
             }
             // Brake well before the standoff so we don't overshoot at warp speed.
             const brakeZone = Math.max(this.autoStandoff * 8, 12);
@@ -543,9 +558,10 @@ export class ShipController {
     // most of the speed-scale variation, and ×4 on warp mode would push the
     // ship past 20c which feels arbitrary.
     //
-    // 실사 mode overrides the cap entirely: ship cruises at REALISTIC_BASE_SPEED
-    // by default. Shift consumes the warp gauge for a brief REALISTIC_BURST_SPEED
-    // burst. Charge regenerates whenever the burst isn't firing.
+    // 실사 mode: baseline cruise = whichever propulsion mode the player has
+    // selected (currentMaxSpeed). Shift consumes the warp gauge for a brief
+    // REALISTIC_BURST_SPEED jump that overrides the baseline. The gauge
+    // regenerates whenever burst isn't firing.
     let baseMax: number;
     let boost: number;
     if (this.realistic) {
@@ -554,12 +570,15 @@ export class ShipController {
       if (wantBurst) {
         // Drain at 1/REALISTIC_BURST_BUDGET_SECONDS per second; full charge
         // sustains REALISTIC_BURST_BUDGET_SECONDS of warp before depletion.
+        // Burst speed is at least REALISTIC_BURST_SPEED, but if the chosen
+        // baseline is already at or above warp, the burst doesn't drag it
+        // backward — we just use the baseline.
         this.warpCharge = Math.max(0, this.warpCharge - dt / REALISTIC_BURST_BUDGET_SECONDS);
-        baseMax = REALISTIC_BURST_SPEED;
+        baseMax = Math.max(REALISTIC_BURST_SPEED, this.currentMaxSpeed);
       } else {
         // Regen at 1/REALISTIC_CHARGE_FULL_SECONDS per second.
         this.warpCharge = Math.min(1, this.warpCharge + dt / REALISTIC_CHARGE_FULL_SECONDS);
-        baseMax = REALISTIC_BASE_SPEED;
+        baseMax = this.currentMaxSpeed;
       }
       boost = 1;
     } else {

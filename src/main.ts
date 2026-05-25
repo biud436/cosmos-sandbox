@@ -238,7 +238,7 @@ ship.onPropulsionChange = (spec) => {
 // speed and Shift fires a brief warp burst gated by the charge gauge.
 ship.onRealisticToggle = (on) => {
   shipHUD.flashHint(on
-    ? '실사 모드 전환 — 근접 기동 + 워프 게이지 (Shift 유지 시 burst)'
+    ? '실사 모드 전환 — Z 로 순항/고속/워프 선택 · Shift 유지 시 워프 burst (게이지)'
     : '실사 모드 해제 — 일반 추진으로 복귀');
 };
 
