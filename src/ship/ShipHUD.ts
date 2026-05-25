@@ -116,6 +116,8 @@ export class ShipHUD {
   private readonly faBadge: HTMLElement;
   private readonly orbitBadge: HTMLElement;
   private readonly modeBadge: HTMLElement;
+  private readonly warpRow: HTMLElement;
+  private readonly warpFill: HTMLElement;
   private readonly targetBracket: HTMLElement;
   private readonly targetInfo: HTMLElement;
   private readonly navArrow: HTMLElement;
@@ -152,12 +154,17 @@ export class ShipHUD {
         <div class="ship-help-row"><span class="ship-help-k">X</span><span>비상 정지</span></div>
         <div class="ship-help-row"><span class="ship-help-k">Space</span><span>비행보조 토글</span></div>
         <div class="ship-help-row"><span class="ship-help-k">Z</span><span>추진 모드 (Shift+Z 역방향)</span></div>
+        <div class="ship-help-row"><span class="ship-help-k">V</span><span>실사 모드 토글 (게이지 워프)</span></div>
         <div class="ship-help-row"><span class="ship-help-k">G</span><span>레티클 대상 궤도</span></div>
         <div class="ship-help-row"><span class="ship-help-k">Tab</span><span>메뉴 / 도감</span></div>
       </div>
       <div class="ship-hud-bc">
         <div class="ship-thr-label">THROTTLE</div>
         <div class="ship-thr-bar"><div class="ship-thr-fill" id="ship-thr-fill"></div></div>
+        <div class="ship-warp-row" id="ship-warp-row" style="display:none">
+          <div class="ship-warp-label">WARP CHG</div>
+          <div class="ship-warp-bar"><div class="ship-warp-fill" id="ship-warp-fill"></div></div>
+        </div>
       </div>
       <div class="ship-hud-hint" id="ship-hud-hint">
         클릭하여 마우스 잠금 · 오른쪽 패널 참조 · Z 추진모드 · G 궤도 · Tab 메뉴
@@ -183,6 +190,8 @@ export class ShipHUD {
     this.faBadge = this.root.querySelector('#ship-badge-fa') as HTMLElement;
     this.orbitBadge = this.root.querySelector('#ship-badge-orbit') as HTMLElement;
     this.modeBadge = this.root.querySelector('#ship-badge-mode') as HTMLElement;
+    this.warpRow = this.root.querySelector('#ship-warp-row') as HTMLElement;
+    this.warpFill = this.root.querySelector('#ship-warp-fill') as HTMLElement;
     this.targetBracket = this.root.querySelector('#ship-target-bracket') as HTMLElement;
     this.targetInfo = this.root.querySelector('#ship-target-info') as HTMLElement;
     this.navArrow = this.root.querySelector('#ship-nav-arrow') as HTMLElement;
@@ -257,8 +266,24 @@ export class ShipHUD {
       this.orbitBadge.style.display = 'none';
     }
     const modeSpec = PROPULSION_SPECS[state.propulsionMode];
-    this.modeBadge.textContent = `MODE · ${modeSpec.label}`;
-    this.modeBadge.dataset.mode = state.propulsionMode;
+    if (state.realisticMode) {
+      this.modeBadge.textContent = 'MODE · 실사';
+      this.modeBadge.dataset.mode = 'realistic';
+    } else {
+      this.modeBadge.textContent = `MODE · ${modeSpec.label}`;
+      this.modeBadge.dataset.mode = state.propulsionMode;
+    }
+
+    // Warp gauge — visible only in 실사 mode; fill = current charge level.
+    // Background tints red as the charge depletes so the burst limit is
+    // legible even at a glance, and pulses when actively bursting.
+    if (state.realisticMode) {
+      this.warpRow.style.display = '';
+      this.warpFill.style.width = `${(state.warpCharge * 100).toFixed(1)}%`;
+      this.warpFill.classList.toggle('bursting', state.warpBursting);
+    } else {
+      this.warpRow.style.display = 'none';
+    }
 
     this.drawGizmo(camera);
     this.updateNavArrow(nav, state, camera);
@@ -481,6 +506,32 @@ export class ShipHUD {
       .ship-thr-fill.boost {
         background: linear-gradient(90deg, #ff9e3b, #ffd66b);
         box-shadow: 0 0 8px rgba(255,180,80,0.6);
+      }
+      .ship-warp-row {
+        margin-top: 4px;
+      }
+      .ship-warp-label {
+        font-size: 9px; letter-spacing: 2px; color: #c08fff; margin-bottom: 3px;
+      }
+      .ship-warp-bar {
+        height: 6px; background: rgba(140, 60, 200, 0.18);
+        border: 1px solid rgba(180, 110, 240, 0.30);
+        border-radius: 3px; overflow: hidden;
+      }
+      .ship-warp-fill {
+        height: 100%; width: 0%;
+        background: linear-gradient(90deg, #8a55d8, #d68bff);
+        transition: width 0.05s linear;
+      }
+      .ship-warp-fill.bursting {
+        background: linear-gradient(90deg, #ff6ad2, #ffd1ff);
+        box-shadow: 0 0 10px rgba(255, 130, 230, 0.7);
+      }
+      .ship-badge.mode[data-mode="realistic"] {
+        background: rgba(180, 110, 240, 0.22);
+        border-color: rgba(220, 140, 255, 0.55);
+        color: #e0baff;
+        text-shadow: 0 0 6px rgba(220, 140, 255, 0.5);
       }
       .ship-hud-hint {
         position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);

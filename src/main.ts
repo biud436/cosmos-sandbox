@@ -234,6 +234,14 @@ ship.onPropulsionChange = (spec) => {
   shipHUD.flashHint(`추진 모드 → ${spec.label} · ${spec.description}`);
 };
 
+// 실사 (realistic) mode toggle — V key. While on, ship cruises at approach
+// speed and Shift fires a brief warp burst gated by the charge gauge.
+ship.onRealisticToggle = (on) => {
+  shipHUD.flashHint(on
+    ? '실사 모드 전환 — 근접 기동 + 워프 게이지 (Shift 유지 시 burst)'
+    : '실사 모드 해제 — 일반 추진으로 복귀');
+};
+
 layout.bindToolbar({
   presets: PRESETS.map((p) => p.name),
   initialPreset: controls.state.preset,

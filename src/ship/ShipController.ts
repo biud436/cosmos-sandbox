@@ -84,7 +84,25 @@ export interface ShipState {
   boosting: boolean;
   /** Currently-active propulsion regime. */
   propulsionMode: PropulsionMode;
+  /** Whether the player has 실사 (realistic) mode active. */
+  realisticMode: boolean;
+  /** 0..1 — warp gauge level (only relevant in 실사 mode). */
+  warpCharge: number;
+  /** True while a warp burst is firing (consuming charge). */
+  warpBursting: boolean;
 }
+
+// 실사 (realistic) mode. A toggle layered ON TOP of the propulsion-mode
+// cycle: when ON the ship always cruises at approach speed (no infinite
+// thrust), but holding Shift fires a brief warp burst — gated by a finite
+// charge gauge that refills slowly. Models the "spaceship with an actual
+// energy budget" feel the user asked for: no perpetual c-fraction cruise,
+// no instant-glide to far targets via G.
+export const REALISTIC_BASE_SPEED = 0.5;        // u/s, same as approach mode
+export const REALISTIC_BURST_SPEED = 600;       // u/s, same as warp mode
+export const REALISTIC_CHARGE_FULL_SECONDS = 10; // how long to fully recharge
+export const REALISTIC_BURST_BUDGET_SECONDS = 1; // how long full charge lasts
+// → recharge rate = 1 / 10 (charge per second), drain rate = 1 / 1 = 1/s.
 
 export class ShipController {
   private readonly camera: THREE.PerspectiveCamera;
@@ -103,6 +121,14 @@ export class ShipController {
   onFlightAssistToggle: ((on: boolean) => void) | null = null;
   /** Fired when the propulsion mode changes — HUD flashes a label. */
   onPropulsionChange: ((spec: PropulsionModeSpec) => void) | null = null;
+  /** Fired when 실사 mode toggles — HUD flashes "전환/해제" hint. */
+  onRealisticToggle: ((on: boolean) => void) | null = null;
+
+  // 실사 mode state. `realistic` is the toggle; `warpCharge` is the gauge
+  // (0..1); `warpBursting` is true while the burst is actively firing.
+  private realistic = false;
+  private warpCharge = 1.0;
+  private warpBursting = false;
 
   // Ship state. The camera position/orientation mirrors these every frame.
   private readonly position = new THREE.Vector3();
@@ -204,6 +230,29 @@ export class ShipController {
   getPropulsionSpec(): PropulsionModeSpec {
     return PROPULSION_SPECS[this.propulsionMode];
   }
+
+  /** Toggle 실사 (realistic) mode. While active, the ship is capped at
+   *  approach speed and Shift fires a gated warp burst from the charge
+   *  gauge. The 4-step propulsion cycle (Z) is still available but its
+   *  speed cap is overridden while realistic is on. */
+  toggleRealisticMode(): void {
+    this.setRealisticMode(!this.realistic);
+  }
+
+  setRealisticMode(on: boolean): void {
+    if (this.realistic === on) return;
+    this.realistic = on;
+    if (on) {
+      // Reset gauge to full so the first burst is immediately available
+      // (otherwise enabling the mode mid-flight would feel slow).
+      this.warpCharge = 1.0;
+      this.warpBursting = false;
+    }
+    this.onRealisticToggle?.(on);
+  }
+
+  isRealistic(): boolean { return this.realistic; }
+  getWarpCharge(): number { return this.warpCharge; }
 
   get enabled(): boolean {
     return this._enabled;
@@ -420,10 +469,34 @@ export class ShipController {
           // current dist as the scale instead — it's a conservative proxy
           // that gives close targets a sub-c cap.
           const travel = Math.max(0, dist - this.autoStandoff);
-          const maxCruise = Math.min(0.6 * LIGHTSPEED_UNITS, 6 + travel * 1.2);
-          const brakeZone = Math.max(this.autoStandoff * 6, maxCruise * 0.6);
-          const ease = Math.min(1, travel / brakeZone);
-          const desiredSpeed = Math.max(1.5, maxCruise * ease);
+          // 실사 mode autopilot: drain the warp gauge to make a burst toward
+          // the target, then coast at approach speed (≈ stand still) while
+          // the gauge recharges, then burst again. The ship visibly "warps"
+          // in short hops — far targets take many bursts, not an instant
+          // glide. Outside 실사 we use the historic continuous cruise plan.
+          let desiredSpeed: number;
+          if (this.realistic) {
+            if (this.warpCharge > 0.05) {
+              // Burst: ride the gauge down. Mark warpBursting so HUD shows it.
+              this.warpCharge = Math.max(0, this.warpCharge - dt / REALISTIC_BURST_BUDGET_SECONDS);
+              this.warpBursting = true;
+              desiredSpeed = REALISTIC_BURST_SPEED;
+            } else {
+              // Gauge empty: creep at approach speed while it recharges.
+              this.warpCharge = Math.min(1, this.warpCharge + dt / REALISTIC_CHARGE_FULL_SECONDS);
+              this.warpBursting = false;
+              desiredSpeed = REALISTIC_BASE_SPEED;
+            }
+            // Brake well before the standoff so we don't overshoot at warp speed.
+            const brakeZone = Math.max(this.autoStandoff * 8, 12);
+            const ease = Math.min(1, travel / brakeZone);
+            desiredSpeed *= ease;
+          } else {
+            const maxCruise = Math.min(0.6 * LIGHTSPEED_UNITS, 6 + travel * 1.2);
+            const brakeZone = Math.max(this.autoStandoff * 6, maxCruise * 0.6);
+            const ease = Math.min(1, travel / brakeZone);
+            desiredSpeed = Math.max(1.5, maxCruise * ease);
+          }
           const dir = toTarget.normalize();
           // Blend velocity toward the desired vector instead of hard-setting,
           // so the ship's apparent inertia stays believable.
@@ -469,8 +542,31 @@ export class ShipController {
     // Boost is now ×2 (was ×4 when there was only one regime) — modes carry
     // most of the speed-scale variation, and ×4 on warp mode would push the
     // ship past 20c which feels arbitrary.
-    const boost = this.keys.has('shift') ? 2 : 1;
-    const baseMax = this.currentMaxSpeed;
+    //
+    // 실사 mode overrides the cap entirely: ship cruises at REALISTIC_BASE_SPEED
+    // by default. Shift consumes the warp gauge for a brief REALISTIC_BURST_SPEED
+    // burst. Charge regenerates whenever the burst isn't firing.
+    let baseMax: number;
+    let boost: number;
+    if (this.realistic) {
+      const wantBurst = this.keys.has('shift') && this.warpCharge > 0;
+      this.warpBursting = wantBurst;
+      if (wantBurst) {
+        // Drain at 1/REALISTIC_BURST_BUDGET_SECONDS per second; full charge
+        // sustains REALISTIC_BURST_BUDGET_SECONDS of warp before depletion.
+        this.warpCharge = Math.max(0, this.warpCharge - dt / REALISTIC_BURST_BUDGET_SECONDS);
+        baseMax = REALISTIC_BURST_SPEED;
+      } else {
+        // Regen at 1/REALISTIC_CHARGE_FULL_SECONDS per second.
+        this.warpCharge = Math.min(1, this.warpCharge + dt / REALISTIC_CHARGE_FULL_SECONDS);
+        baseMax = REALISTIC_BASE_SPEED;
+      }
+      boost = 1;
+    } else {
+      boost = this.keys.has('shift') ? 2 : 1;
+      baseMax = this.currentMaxSpeed;
+      this.warpBursting = false;
+    }
     const accel = baseMax * 1.5 * boost; // saturates to baseMax·boost in ~0.67s
 
     const thrustW = this.keys.has('w');
@@ -534,6 +630,9 @@ export class ShipController {
       speedC: speed / LIGHTSPEED_UNITS,
       boosting,
       propulsionMode: this.propulsionMode,
+      realisticMode: this.realistic,
+      warpCharge: this.warpCharge,
+      warpBursting: this.warpBursting,
     };
   }
 
@@ -546,7 +645,7 @@ export class ShipController {
     return (
       key === 'w' || key === 'a' || key === 's' || key === 'd' ||
       key === 'q' || key === 'e' || key === 'r' || key === 'f' ||
-      key === 'x' || key === 'z' ||
+      key === 'x' || key === 'z' || key === 'v' ||
       key === ' ' || key === 'spacebar' || key === 'shift'
     );
   }
@@ -578,6 +677,11 @@ export class ShipController {
       }
       return;
     }
+    if (key === 'v') {
+      // Edge-triggered 실사 mode toggle.
+      if (!e.repeat) this.toggleRealisticMode();
+      return;
+    }
     this.keys.add(key);
   }
 
@@ -587,7 +691,7 @@ export class ShipController {
     e.stopImmediatePropagation();
     if (key === 'shift') { this.keys.delete('shift'); return; }
     if (key === ' ' || key === 'spacebar') return; // edge-triggered, no held state
-    if (key === 'z') return; // edge-triggered too
+    if (key === 'z' || key === 'v') return; // edge-triggered too
     this.keys.delete(key);
   }
 
