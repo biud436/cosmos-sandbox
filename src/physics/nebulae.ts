@@ -3,6 +3,7 @@
 // "modules-as-friends" pattern — these are not intended to be called from
 // outside src/physics/.
 import type { Effector, Simulator } from './Simulator';
+import { spawnStarFromCluster } from './starFormation';
 import { SPECIES } from './types';
 
 // R = coeff · M^exp, clamped. Sub-linear power keeps small nebulae compact
@@ -119,6 +120,16 @@ export function updateNebulae(sim: Simulator): void {
     e.vz = vz;
     e.strength = totM;
     e.radius = nebulaRadiusFor(totM, sim);
+
+    // Cradle pass: a mature nebula occasionally births a child star from its
+    // internal gas. This runs independently of the global continuous-SF flag
+    // so a nebula keeps producing stars even when the player has SF off
+    // globally. The star inherits the gas cluster's COM velocity (so it stays
+    // mostly co-moving with the cradle) plus a small tangential kick (so it
+    // orbits the cradle's center rather than drifting straight through).
+    if (totM >= sim.nebulaMaturityMass) {
+      tryNebulaNursery(sim, e);
+    }
   }
 
   for (const e of removed) {
@@ -130,6 +141,105 @@ export function updateNebulae(sim: Simulator): void {
   }
 
   mergeOverlappingNebulae(sim);
+}
+
+// Per-nebula nursery cooldown. Keyed by eff.id so the bookkeeping survives
+// individual nebula merges (the keeper inherits the lower of the two times,
+// which is fine — it just gets to spawn slightly sooner).
+const nurseryNextAt = new Map<number, number>();
+
+// Cradle birth: pick a dense pocket of gas particles inside the nebula,
+// promote them to a star, give the star a small tangential kick about the
+// nebula's center so it orbits the cradle rather than drifting through.
+// Runs at most every `sim.nebulaNurseryCooldown` seconds per nebula and only
+// when the nebula has surplus gas to spare (so we don't dissolve it).
+function tryNebulaNursery(sim: Simulator, neb: Effector): void {
+  const next = nurseryNextAt.get(neb.id) ?? 0;
+  if (sim.simTime < next) return;
+
+  // Hold back the cooldown to a per-nebula stochastic interval (1.5-3.5×
+  // the base) so neighboring cradles don't fire in lockstep.
+  const base = sim.nebulaNurseryCooldown;
+  nurseryNextAt.set(neb.id, sim.simTime + base * (1.5 + Math.random() * 2.0));
+
+  // Refuse if removing a cluster's worth of mass would drop the nebula
+  // below the dissolve threshold (we want the cradle to keep birthing for
+  // a long time, not die after one star).
+  const groupSize = Math.max(3, Math.min(8, sim.starFormationCount));
+  if (neb.strength < sim.nebulaDissolveMassMin + groupSize * 1.2) return;
+
+  // Find candidate gas particles inside the nebula (excluding DM).
+  const dmId = sim.dmSpeciesId;
+  const R = neb.radius;
+  const R2 = R * R;
+  const candidates: number[] = [];
+  for (let i = 0; i < sim.count; i++) {
+    const si = sim.species[i];
+    if (si === dmId) continue;
+    const dx = sim.positions[i * 3 + 0] - neb.x;
+    const dy = sim.positions[i * 3 + 1] - neb.y;
+    const dz = sim.positions[i * 3 + 2] - neb.z;
+    if (dx * dx + dy * dy + dz * dz < R2) candidates.push(i);
+  }
+  if (candidates.length < groupSize) return;
+
+  // Pick the densest pocket: seed at a random candidate, take the closest
+  // groupSize-1 peers. Random seed (instead of densest seed) so successive
+  // nursery births don't all spawn at the same hot spot.
+  const seed = candidates[(Math.random() * candidates.length) | 0];
+  const sx = sim.positions[seed * 3 + 0];
+  const sy = sim.positions[seed * 3 + 1];
+  const sz = sim.positions[seed * 3 + 2];
+  const dists: { idx: number; d2: number }[] = [];
+  for (const j of candidates) {
+    if (j === seed) continue;
+    const dx = sim.positions[j * 3 + 0] - sx;
+    const dy = sim.positions[j * 3 + 1] - sy;
+    const dz = sim.positions[j * 3 + 2] - sz;
+    dists.push({ idx: j, d2: dx * dx + dy * dy + dz * dz });
+  }
+  dists.sort((a, b) => a.d2 - b.d2);
+  const members = [seed];
+  for (let k = 0; k < groupSize - 1 && k < dists.length; k++) members.push(dists[k].idx);
+  if (members.length < groupSize) return;
+
+  const star = spawnStarFromCluster(sim, members);
+  if (!star) return;
+
+  // Tangential kick: take the vector from nebula center to the star, pick a
+  // perpendicular direction (favoring whatever the cluster's residual
+  // velocity already projects onto), give the star a sub-light orbital
+  // boost. This makes the child genuinely orbit instead of just being
+  // co-moving with the cradle.
+  const rx = star.x - neb.x;
+  const ry = star.y - neb.y;
+  const rz = star.z - neb.z;
+  const rMag = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  if (rMag > 1e-3) {
+    // Build an orthogonal frame: pick any vector not parallel to r, cross.
+    let ux = 0, uy = 1, uz = 0;
+    if (Math.abs(ry / rMag) > 0.9) { ux = 1; uy = 0; uz = 0; }
+    // tangent = r × u (perpendicular to r), then normalize
+    const tx = ry * uz - rz * uy;
+    const ty = rz * ux - rx * uz;
+    const tz = rx * uy - ry * ux;
+    const tMag = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    if (tMag > 1e-3) {
+      // Circular-orbit speed scaled to actual gravity at this radius:
+      //   v² ≈ G·M_neb / r  →  v = sqrt(G·M/r)
+      const vCirc = Math.sqrt(Math.max(0, sim.effectorPairG * neb.strength / rMag));
+      const k = vCirc / tMag;
+      // Random sign so cradles produce a mix of prograde/retrograde children
+      const sign = Math.random() < 0.5 ? -1 : 1;
+      star.vx += tx * k * sign;
+      star.vy += ty * k * sign;
+      star.vz += tz * k * sign;
+    }
+  }
+
+  // Descending order so indices stay valid as we swap-remove from the back.
+  members.sort((a, b) => b - a);
+  for (const idx of members) if (idx < sim.count) sim.removeParticle(idx);
 }
 
 // Adjacent nebulae fuse into one larger cloud (gas clusters collide and become

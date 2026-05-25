@@ -8,6 +8,16 @@ export function isMassive(e: Effector): boolean {
   return e.type === 'blackhole' || e.type === 'star' || e.type === 'neutron_star';
 }
 
+// Nebulae are *gravity sources* (their tracked gas mass pulls on stars/BHs/NS)
+// but NOT receivers — their own motion is driven by gas-COM tracking in
+// updateNebulae, so applying acceleration to them here would fight that. This
+// is what gravitationally binds child stars to their birth cradle: a star
+// born inside a nebula inherits gas-cluster velocity, then keeps orbiting
+// because the surrounding cloud still pulls on it.
+export function isGravitySource(e: Effector): boolean {
+  return e.type === 'blackhole' || e.type === 'star' || e.type === 'neutron_star' || e.type === 'nebula';
+}
+
 export function integrateEffectors(sim: Simulator, dt: number): void {
   const list = sim.effectors;
   if (list.length === 0) return;
@@ -19,12 +29,18 @@ export function integrateEffectors(sim: Simulator, dt: number): void {
   const az = new Float64Array(list.length);
 
   const starStarMul = sim.starStarGMul;
+  // Asymmetric pair loop: receiver (massive) ← source (any gravity source).
+  // For massive-massive pairs Newton's third law is preserved by the j<i
+  // half — we only emit the i←j contribution per (i, j) pair and rely on
+  // the symmetric loop iteration to produce j←i separately, except for
+  // nebula sources which only push, never get pushed.
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
     if (!isMassive(a)) continue;
-    for (let j = i + 1; j < list.length; j++) {
+    for (let j = 0; j < list.length; j++) {
+      if (i === j) continue;
       const b = list[j];
-      if (!isMassive(b)) continue;
+      if (!isGravitySource(b)) continue;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dz = b.z - a.z;
@@ -32,15 +48,10 @@ export function integrateEffectors(sim: Simulator, dt: number): void {
       const invR = 1 / Math.sqrt(r2);
       let mul = 1;
       if (a.type === 'star' && b.type === 'star') mul = starStarMul;
-      const base = G * invR * invR * invR * mul;
-      const fa = base * b.strength;
-      const fb = base * a.strength;
+      const fa = G * invR * invR * invR * mul * b.strength;
       ax[i] += fa * dx;
       ay[i] += fa * dy;
       az[i] += fa * dz;
-      ax[j] -= fb * dx;
-      ay[j] -= fb * dy;
-      az[j] -= fb * dz;
     }
   }
 

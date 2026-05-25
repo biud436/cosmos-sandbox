@@ -244,6 +244,13 @@ export class Simulator {
   nebulaMassMin = 5;
   nebulaDissolveMassMin = 2;
   maxNebulae = 24;
+  // How often (in sim-time seconds) a mature nebula attempts to spawn a
+  // child star from its own internal gas. Independent of the global
+  // continuous-SF cooldown so cradles keep producing even when SF is off
+  // globally. The actual per-nebula interval is randomized to 1.5-3.5×
+  // this base so neighboring cradles don't fire in lockstep.
+  nebulaNurseryCooldown = 1.5;
+
   // Below this mass an active nebula's gas is "protected" from continuous
   // star formation so it can grow into a giant molecular cloud first. Once a
   // nebula matures past the threshold, SF proceeds normally inside it.

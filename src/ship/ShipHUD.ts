@@ -2,40 +2,70 @@ import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
 import { PROPULSION_SPECS, ShipState } from './ShipController';
 
-// Cosmic-unit display for spaceship mode. The sim is unitless internally
-// ("u"), and km is too granular for "space" — at the c-anchored scale a
-// 60-u planet orbit reads as a few hundred thousand km, which feels
-// Earth-orbital rather than stellar. So we pick a display anchor where AU
-// is the natural unit:
+// Cosmic-unit display for spaceship mode. The sim uses one coordinate system
+// for both planet orbits AND star-to-star distances, but in reality those
+// scales differ by ~5-6 orders of magnitude (a planet sits ~1 AU from its
+// host star, whereas neighboring stars sit several light-years apart). A
+// single u→real conversion can only be right for one of these contexts, so
+// we use TWO independent display scales — picked per context by what's
+// being measured:
 //
-//   1 u  ≈ 0.10 AU = 1.4960 × 10⁷ km
+//   PLANETARY scale (1u = 0.5 AU)
+//     For distances inside a star system: planet orbit radius, planet body
+//     radius, ship-to-planet DIST. A 5-60u orbit reads as 2.5-30 AU,
+//     matching the Mars-to-Neptune range.
 //
-// Under this, typical planet orbits (5-60 u) land at 0.5-6 AU — the same
-// rough scale as Mercury-to-Jupiter. The c-fraction display still uses the
-// LIGHTSPEED_UNITS anchor (c = 60 u/s), so it remains a meaningful
-// relative-speed reference, but at this redefined display scale it no
-// longer matches physical c — the sim is openly stylized (warp drive,
-// compressed simulation time), not Earth-physics-accurate.
-const AU_PER_U = 0.10;
+//   INTERSTELLAR scale (1u = 1.0 ly)
+//     For distances between star systems: ship-to-star DIST, nearest-star
+//     readout. A 30u traversal reads as 30 ly (galactic neighborhood). The
+//     simulation's coordinate values grow naturally with sim.scaleFactor as
+//     Hubble expansion runs, so distances in this readout get bigger over
+//     long sessions — no extra Hubble correction needed.
+//
+// This is dishonest only in the sense that "5 u" means 2.5 AU in one
+// context and 5 ly in another. But it matches what cosmic visualizations
+// always do — orreries and galactic maps use entirely different scales —
+// and it's what makes the readouts feel like "space."
 const KM_PER_AU = 149_597_870.7;
 const KM_PER_LY = 9.4607304725808e12;
 const AU_PER_LY = KM_PER_LY / KM_PER_AU; // ≈ 63,241.077
 
-export function formatRealDistance(u: number): string {
-  const au = u * AU_PER_U;
-  // Interstellar tier — Hubble expansion across long sessions can push reads
-  // here even though most ship-mode work happens far below this threshold.
-  if (au >= AU_PER_LY * 0.1) return `${(au / AU_PER_LY).toFixed(2)} ly`;
-  // The natural readout for almost everything the player measures.
+const PLANETARY_AU_PER_U = 0.5;   // 1u = 0.5 AU
+const INTERSTELLAR_LY_PER_U = 1.0; // 1u = 1.0 ly
+
+/** Planetary-context distance: AU for typical reads, km for sub-AU close-in. */
+export function formatPlanetaryDistance(u: number): string {
+  const au = u * PLANETARY_AU_PER_U;
   if (au >= 1000) return `${au.toFixed(0)} AU`;
   if (au >= 10)   return `${au.toFixed(1)} AU`;
   if (au >= 0.01) return `${au.toFixed(2)} AU`;
-  // Sub-mAU — only relevant for very close-in maneuvering; fall back to km.
   const km = au * KM_PER_AU;
   if (km >= 1e6) return `${(km / 1e6).toFixed(2)} Mkm`;
   if (km >= 1)   return `${km.toFixed(0)} km`;
   return `${(km * 1000).toFixed(0)} m`;
 }
+
+/** Interstellar-context distance: ly for typical reads, AU for sub-ly. */
+export function formatInterstellarDistance(u: number): string {
+  const ly = u * INTERSTELLAR_LY_PER_U;
+  if (ly >= 1000) return `${ly.toFixed(0)} ly`;
+  if (ly >= 10)   return `${ly.toFixed(1)} ly`;
+  if (ly >= 0.01) return `${ly.toFixed(2)} ly`;
+  // Below 0.01 ly fall back to AU — typically only happens when the ship
+  // sits inside a star system and the "nearest star" is its current host.
+  const au = ly * AU_PER_LY;
+  if (au >= 1)    return `${au.toFixed(1)} AU`;
+  return `${au.toFixed(3)} AU`;
+}
+
+/** Pick the right scale for a HUDTarget based on its kind. */
+function formatTargetDistance(u: number, kind: 'planet' | 'star'): string {
+  return kind === 'star' ? formatInterstellarDistance(u) : formatPlanetaryDistance(u);
+}
+
+/** Back-compat alias — defaults to planetary scale; existing callers in
+ *  main.ts pass planet orbit/radius, which is the planetary context. */
+export const formatRealDistance = formatPlanetaryDistance;
 
 export interface HUDTarget {
   kind: 'planet' | 'star';
@@ -178,7 +208,8 @@ export class ShipHUD {
 
     if (nearestStar) {
       const name = nearestStar.eff.name ?? `${nearestStar.eff.type}`;
-      this.nearestEl.textContent = `${name} · ${formatRealDistance(nearestStar.distance)}`;
+      // Nearest stellar object — always interstellar scale.
+      this.nearestEl.textContent = `${name} · ${formatInterstellarDistance(nearestStar.distance)}`;
     } else {
       this.nearestEl.textContent = '—';
     }
@@ -186,7 +217,8 @@ export class ShipHUD {
     if (target) {
       const tp = target.getPosition();
       const dist = tp.distanceTo(state.position);
-      this.tgtEl.innerHTML = `<b>${escapeText(target.label)}</b> · ${formatRealDistance(dist)} · <span class="ship-key">G</span> 궤도`;
+      // Planet target → AU (we're inside the system); star target → ly.
+      this.tgtEl.innerHTML = `<b>${escapeText(target.label)}</b> · ${formatTargetDistance(dist, target.kind)} · <span class="ship-key">G</span> 궤도`;
       this.updateTargetBracket(target, camera, dist);
     } else {
       this.tgtEl.textContent = '레티클을 별/행성에 맞추세요';
@@ -259,7 +291,12 @@ export class ShipHUD {
       const angle = Math.atan2(dx, -dy);
       tri.style.transform = `rotate(${angle}rad)`;
     }
-    this.navLabel.textContent = `${nav.label} · ${formatRealDistance(dist)}`;
+    // Nav-arrow targets don't carry kind, but the ship's typical navigation
+    // is to nearby objects (selected via reticle). Use planetary scale as
+    // the default — it's the safer "smaller numbers" choice that won't
+    // mislead about distances inside a star system. Interstellar reads
+    // will appear in the NEAR / TGT slots anyway.
+    this.navLabel.textContent = `${nav.label} · ${formatPlanetaryDistance(dist)}`;
   }
 
   private updateTargetBracket(target: HUDTarget, camera: THREE.PerspectiveCamera, distance: number): void {
@@ -289,7 +326,7 @@ export class ShipHUD {
     card.innerHTML = `
       <div class="tinfo-head">${swatch}<div class="tinfo-name">${escapeText(target.label)}</div></div>
       <div class="tinfo-body">${rows}
-        <div class="tinfo-row"><span class="tinfo-k">DIST</span><span class="tinfo-v">${formatRealDistance(distance)}</span></div>
+        <div class="tinfo-row"><span class="tinfo-k">DIST</span><span class="tinfo-v">${formatTargetDistance(distance, target.kind)}</span></div>
       </div>
     `;
     card.style.display = '';
