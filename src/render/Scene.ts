@@ -3,6 +3,19 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPECIES } from '../physics/types';
 import { Effector, EffectorType, Simulator } from '../physics/Simulator';
 
+// Mass → spectral class color, approximating O/B/A/F/G/K/M sequence.
+// Mass thresholds chosen for the compressed sim scale (not solar units).
+// Colors picked from Planck blackbody at the corresponding effective temp,
+// then desaturated slightly so massive stars don't go pure-blue.
+function spectralColor(mass: number): [number, number, number] {
+  if (mass < 12)  return [1.00, 0.55, 0.42]; // M-dwarf  (~3000K)
+  if (mass < 22)  return [1.00, 0.72, 0.50]; // K        (~4500K)
+  if (mass < 40)  return [1.00, 0.90, 0.72]; // G (sun)  (~5800K)
+  if (mass < 70)  return [1.00, 0.98, 0.92]; // F/A      (~7000–8500K)
+  if (mass < 130) return [0.82, 0.90, 1.00]; // B        (~15000K)
+  return            [0.65, 0.80, 1.00];      // O/Wolf-Rayet (~30000K+)
+}
+
 export class Scene {
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
@@ -50,7 +63,14 @@ export class Scene {
   private trailSampleAccum = 0;
   private trailSampleInterval = 1 / 60; // record at ~60Hz max
   private bondPositions: Float32Array | null = null;
-  private effectorViews = new Map<Effector, { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null }>();
+  private effectorViews = new Map<Effector, {
+    group: THREE.Group;
+    mat: THREE.ShaderMaterial;
+    selectionRing: THREE.Mesh;
+    influenceRing: THREE.Mesh | null;
+    lastConsumed?: number;
+    accretion?: number;
+  }>();
   private effectorClock = 0;
   private selectedEffector: Effector | null = null;
   private renderMode: 'solid' | 'gas' = 'solid';
@@ -1139,6 +1159,28 @@ export class Scene {
       if (view.mat.uniforms.uMass) {
         view.mat.uniforms.uMass.value = eff.strength;
       }
+
+      // Stellar spectral type: outer color follows the star's mass-derived
+      // effective temperature. Massive (≥80) stars are blue-white; mid stars
+      // white/yellow; low-mass red. Mirrors O/B/A/F/G/K/M classification.
+      if (eff.type === 'star' && view.mat.uniforms.uColor) {
+        const col = spectralColor(eff.strength);
+        (view.mat.uniforms.uColor.value as THREE.Color).setRGB(col[0], col[1], col[2]);
+      }
+
+      // BH accretion activity: low-pass filter of consumed-per-frame so the
+      // glow ramps up smoothly while gas is falling in (AGN/quasar mode) and
+      // fades out when the BH is dormant.
+      if (eff.type === 'blackhole' && view.mat.uniforms.uAccretion) {
+        const lastConsumed = view.lastConsumed ?? eff.consumed;
+        const delta = Math.max(0, eff.consumed - lastConsumed);
+        view.lastConsumed = eff.consumed;
+        const target = Math.min(1, delta * 0.35);
+        const prev = view.accretion ?? 0;
+        const smoothed = prev * 0.85 + target * 0.15;
+        view.accretion = smoothed;
+        view.mat.uniforms.uAccretion.value = smoothed;
+      }
       const selected = eff === this.selectedEffector;
       view.selectionRing.visible = selected;
       if (selected) {
@@ -1167,20 +1209,31 @@ export class Scene {
           varying vec2 vUv;
           uniform float uTime;
           uniform float uRedshift;
+          uniform float uAccretion;
+
           void main() {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
             if (r > 1.0 || r < 0.55) discard;
+
+            // Faster spin + harder UV when actively accreting (AGN/quasar-like)
             float a = atan(c.y, c.x);
-            float swirl = sin(a * 5.0 - uTime * 4.0 + (1.0 - r) * 14.0);
+            float spinRate = 4.0 + uAccretion * 5.0;
+            float swirl = sin(a * 5.0 - uTime * spinRate + (1.0 - r) * 14.0);
             float band = smoothstep(0.55, 0.62, r) * smoothstep(1.0, 0.92, r);
-            vec3 hot = vec3(1.0, 0.85, 0.55);
-            vec3 cool = vec3(1.0, 0.45, 0.15);
+
+            // Disk shifts toward hot white as accretion rate increases
+            vec3 hot = mix(vec3(1.0, 0.85, 0.55), vec3(1.0, 1.0, 0.92), uAccretion * 0.7);
+            vec3 cool = mix(vec3(1.0, 0.45, 0.15), vec3(1.0, 0.65, 0.28), uAccretion * 0.5);
             vec3 col = mix(cool, hot, swirl * 0.5 + 0.5);
+
             vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
             col *= tint;
+
             float dim = 1.0 - 0.30 * uRedshift;
-            gl_FragColor = vec4(col * (1.4 + swirl * 0.4) * dim, band * (0.85 + 0.15 * swirl));
+            float brightness = 1.4 + uAccretion * 1.4;
+            float alphaBoost = 1.0 + uAccretion * 0.55;
+            gl_FragColor = vec4(col * (brightness + swirl * 0.4) * dim, band * (0.85 + 0.15 * swirl) * alphaBoost);
           }
         `;
         break;
@@ -1190,22 +1243,32 @@ export class Scene {
           varying vec2 vUv;
           uniform float uTime;
           uniform float uRedshift;
+          uniform vec3 uColor;
+
           void main() {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
             if (r > 1.0) discard;
+
             float core = exp(-r * 5.5);
             float halo = exp(-r * 1.4) * 0.42;
-            float spike = pow(max(0.0, 1.0 - abs(c.x) * 8.0), 4.0) + pow(max(0.0, 1.0 - abs(c.y) * 8.0), 4.0);
+            float spike = pow(max(0.0, 1.0 - abs(c.x) * 8.0), 4.0)
+                        + pow(max(0.0, 1.0 - abs(c.y) * 8.0), 4.0);
             spike *= exp(-r * 1.8) * 0.35;
             float twinkle = 0.92 + 0.08 * sin(uTime * 2.3);
             float glow = (core + halo + spike) * twinkle;
-            vec3 hotCol = vec3(1.0, 0.98, 0.88);
-            vec3 warmCol = vec3(1.0, 0.72, 0.4);
+
+            // Spectral palette: core whitens (Planck blackbody peak shifts to
+            // visible white at all temperatures); outer color follows uColor
+            // which is set per-star from its mass-derived spectral class.
+            vec3 hotCol = mix(uColor, vec3(1.0), 0.65);
+            vec3 warmCol = uColor;
             vec3 col = mix(warmCol, hotCol, core);
+
             // Cosmological-style redshift: dim blue first, then green, preserve red
             vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
             col *= tint;
+
             float bright = 1.0 - 0.25 * uRedshift;
             gl_FragColor = vec4(col * (0.55 + glow * 1.05) * bright, clamp(glow, 0.0, 1.0));
           }
@@ -1335,7 +1398,13 @@ export class Scene {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      uniforms: { uTime: { value: 0 }, uRedshift: { value: 0 }, uMass: { value: 0 } },
+      uniforms: {
+        uTime: { value: 0 },
+        uRedshift: { value: 0 },
+        uMass: { value: 0 },
+        uColor: { value: new THREE.Color(1.0, 0.92, 0.78) },
+        uAccretion: { value: 0 },
+      },
       vertexShader: `
         varying vec2 vUv;
         void main() {
