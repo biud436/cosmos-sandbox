@@ -1272,26 +1272,48 @@ export class Scene {
           void main() {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
-            if (r > 1.0 || r < 0.55) discard;
 
-            // Faster spin + harder UV when actively accreting (AGN/quasar-like)
+            // r < 0.42 is the BH shadow (the photons that fall in never reach us).
+            // 0.42–0.50 is the photon-orbit ring (Schwarzschild light bending
+            // wraps the far side of the disk around the shadow at 1.5 r_s).
+            // 0.55–1.0 is the accretion disk proper.
+            if (r > 1.0 || r < 0.42) discard;
+
+            float photonMask = smoothstep(0.42, 0.45, r) * smoothstep(0.51, 0.48, r);
+
             float a = atan(c.y, c.x);
             float spinRate = 4.0 + uAccretion * 5.0;
             float swirl = sin(a * 5.0 - uTime * spinRate + (1.0 - r) * 14.0);
             float band = smoothstep(0.55, 0.62, r) * smoothstep(1.0, 0.92, r);
 
+            // Transparent gap between photon ring and disk
+            if (photonMask < 0.01 && band < 0.01) discard;
+
             // Disk shifts toward hot white as accretion rate increases
             vec3 hot = mix(vec3(1.0, 0.85, 0.55), vec3(1.0, 1.0, 0.92), uAccretion * 0.7);
             vec3 cool = mix(vec3(1.0, 0.45, 0.15), vec3(1.0, 0.65, 0.28), uAccretion * 0.5);
-            vec3 col = mix(cool, hot, swirl * 0.5 + 0.5);
+            vec3 diskCol = mix(cool, hot, swirl * 0.5 + 0.5);
+
+            // Photon ring: hot near-white, Doppler-boosted on the approaching
+            // side of the disk (+x in local UV is a stand-in for the rotation
+            // direction; one side reads brighter — the M87/EHT signature).
+            float doppler = 0.55 + 0.45 * c.x;
+            vec3 ringCol = mix(vec3(1.0, 0.78, 0.55), vec3(1.0, 0.96, 0.82), doppler);
+            float ringBright = (2.4 + uAccretion * 2.0) * (0.55 + doppler * 0.55);
+
+            float brightness = 1.4 + uAccretion * 1.4;
+            float alphaBoost = 1.0 + uAccretion * 0.55;
+
+            vec3 col = ringCol * photonMask * ringBright
+                     + diskCol * band * (brightness + swirl * 0.4);
+            float alpha = photonMask * 0.95
+                        + band * (0.85 + 0.15 * swirl) * alphaBoost;
 
             vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
             col *= tint;
-
             float dim = 1.0 - 0.30 * uRedshift;
-            float brightness = 1.4 + uAccretion * 1.4;
-            float alphaBoost = 1.0 + uAccretion * 0.55;
-            gl_FragColor = vec4(col * (brightness + swirl * 0.4) * dim, band * (0.85 + 0.15 * swirl) * alphaBoost);
+
+            gl_FragColor = vec4(col * dim, clamp(alpha, 0.0, 1.0));
           }
         `;
         break;
