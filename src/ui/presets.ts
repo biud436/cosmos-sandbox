@@ -123,22 +123,29 @@ export const PRESETS: Preset[] = [
       {
         time: 20.0,
         name: 'Dark Energy Era',
-        description: '암흑 에너지가 우세해지며 우주가 다시 가속 팽창합니다. 별과 블랙홀이 중심에서 천천히 분산됩니다.',
+        description: '암흑 에너지가 우세해지며 우주가 다시 가속 팽창합니다. 천천히 감속하는 흐름으로, 수 Gyr에 걸쳐 별들이 점차 멀어집니다.',
         action: (sim) => {
-          sim.hubbleRate = Math.max(sim.hubbleRate, 0.015);
-          sim.hubbleDecay = 0;
+          // Re-engage Hubble, but with slow decay (NOT constant H) so the
+          // integrated expansion stays bounded over the multi-Gyr remainder
+          // of the simulation. Constant H = 0.015 over 700 sim sec gives
+          // exp(10.5) ~ 36000× expansion which makes everything vanish.
+          // The 0.018 rate is chosen so at the event time (t=20) the effective
+          // H = 0.018/(1+0.04·20) ≈ 0.010.
+          sim.hubbleRate = Math.max(sim.hubbleRate, 0.018);
+          sim.hubbleDecay = 0.04;
           sim.applyEffectorHubbleFlow = true;
-          // Gentle one-time radial nudge — slow dispersal rather than violent push
+
+          // Gentle one-time radial nudge — slow dispersal
           for (const e of sim.effectors) {
             if (e.type === 'repulsor' || e.type === 'freezer') continue;
             const r = Math.hypot(e.x, e.y, e.z);
             if (r < 1e-3) {
-              e.vx += (Math.random() - 0.5) * 0.15;
-              e.vy += (Math.random() - 0.5) * 0.15;
-              e.vz += (Math.random() - 0.5) * 0.15;
+              e.vx += (Math.random() - 0.5) * 0.10;
+              e.vy += (Math.random() - 0.5) * 0.10;
+              e.vz += (Math.random() - 0.5) * 0.10;
               continue;
             }
-            const k = 0.18 * Math.min(r, 50) / 50;
+            const k = 0.10 * Math.min(r, 50) / 50;
             e.vx += (e.x / r) * k;
             e.vy += (e.y / r) * k;
             e.vz += (e.z / r) * k;

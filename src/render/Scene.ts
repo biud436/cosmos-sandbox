@@ -1198,7 +1198,7 @@ export class Scene {
       // Nebulae's radius already represents the cloud extent — use 0.5x so the
       // 5x5 plane scaled by radius·0.5 covers the radius with soft falloff.
       const scaleBoost =
-        eff.type === 'star' ? 1.25 :
+        eff.type === 'star' ? 1.5 :
         eff.type === 'nebula' ? 0.5 :
         eff.type === 'neutron_star' ? 2.0 :
         1.0;
