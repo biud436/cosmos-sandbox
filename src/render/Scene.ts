@@ -1226,11 +1226,15 @@ export class Scene {
       // dwarf the planets in their system (Sun:Jupiter ≈ 10:1 in real life;
       // 4× of the base 1.6 puts gas giants at ~25% of their host's visual
       // size — close enough to register as "different class of object").
-      // Nebulae's radius already represents the cloud extent — use 0.5x so the
-      // 5x5 plane scaled by radius·0.5 covers the radius with soft falloff.
+      //
+      // Nebulae are diffuse interstellar clouds spanning light-years, so they
+      // must dwarf the stars embedded in them. 8× is paired with shader noise
+      // (irregular feathered silhouette) so the result reads as a wispy cloud
+      // volume, not a flat disk. Previously the nebula was a 0.5× compact
+      // disk smaller than stars, which is physically backward.
       const scaleBoost =
         eff.type === 'star' ? 4.0 :
-        eff.type === 'nebula' ? 0.5 :
+        eff.type === 'nebula' ? 8.0 :
         eff.type === 'neutron_star' ? 2.0 :
         1.0;
       const visualR = eff.radius * scaleBoost * 3.0;
@@ -1253,6 +1257,12 @@ export class Scene {
       }
       if (view.mat.uniforms.uMass) {
         view.mat.uniforms.uMass.value = eff.strength;
+      }
+      // Per-effector seed for shader noise decorrelation. Stable: derives
+      // from eff.id only, so the same nebula keeps the same wisp pattern
+      // across frames and re-renders.
+      if (view.mat.uniforms.uSeed) {
+        view.mat.uniforms.uSeed.value = (eff.id * 0.1729) % 1.0;
       }
 
       // Stellar spectral type + metallicity tint: outer color follows the
@@ -1463,6 +1473,7 @@ export class Scene {
           uniform float uTime;
           uniform float uRedshift;
           uniform float uMass;
+          uniform float uSeed;
           float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float vnoise(vec2 p) {
             vec2 i = floor(p);
@@ -1477,7 +1488,7 @@ export class Scene {
           float fbm(vec2 p) {
             float v = 0.0;
             float a = 0.5;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
               v += vnoise(p) * a;
               p *= 2.0;
               a *= 0.5;
@@ -1485,22 +1496,61 @@ export class Scene {
             return v;
           }
           void main() {
+            // Position in plane-local [-1, 1] coords.
             vec2 c = vUv * 2.0 - 1.0;
-            float r = length(c);
-            if (r > 1.0) discard;
-            float falloff = exp(-r * r * 2.0);
-            vec2 q = vUv * 4.0 + vec2(uTime * 0.018, -uTime * 0.013);
-            float wisp = fbm(q);
-            float fine = fbm(q * 3.0) * 0.35;
-            float density = falloff * mix(0.45, 1.45, clamp(wisp + fine, 0.0, 1.0));
-            // H-alpha + ionized oxygen palette: pink core, magenta/violet halo
+            float baseR = length(c);
+
+            // Hard discard well inside the plane's geometric bound so the
+            // underlying square plane never reveals itself. Plane corners
+            // sit at baseR = √2 ≈ 1.41 and edge-midpoints at 1.0 — we cap
+            // visible density at 0.92, leaving an ~8% margin to the edge
+            // and a generous margin to the corners.
+            if (baseR > 0.95) discard;
+
+            // Per-nebula offset so neighboring clouds don't share the exact
+            // same wisp pattern. uSeed comes from eff.id mixed into the JS
+            // side (createEffectorView wires it once at construction time).
+            vec2 seedOff = vec2(uSeed * 41.7, uSeed * 73.3);
+            vec2 q = vUv * 2.6 + seedOff + vec2(uTime * 0.018, -uTime * 0.013);
+
+            // Multi-octave noise sampled at decorrelated origins. The two
+            // mid-frequency layers add up to an irregular cloud body; the
+            // fine layer punches local holes and adds wispy texture.
+            float n1 = fbm(q);
+            float n2 = fbm(q * 2.3 + vec2(5.7, -3.1) + seedOff * 0.4);
+            float fine = fbm(q * 5.5) * 0.32;
+            float cloud = n1 * 0.55 + n2 * 0.45 + fine;
+
+            // Soft circular envelope. Pulls density to 0 by baseR=0.92 so
+            // the visible cloud sits well inside the square plane — that
+            // fixes the previous "rectangular bounding box visible" look
+            // (where the wide window let cloud extend to plane edges).
+            // The cloud's irregular silhouette still comes from noise; this
+            // window is just a backstop that hides plane geometry.
+            float window = smoothstep(0.92, 0.30, baseR);
+
+            // Subtle core bias so the densest pixels statistically cluster
+            // near the middle — without forcing a perfect disk.
+            float coreBias = exp(-baseR * baseR * 0.85) * 0.35;
+
+            // Density: bias the noise so values below ~0.35 read as "vacuum"
+            // (holes), values above as cloud. Multiplied by the window to
+            // pull the silhouette inside the plane but otherwise let noise
+            // sculpt the shape.
+            float density = max(0.0, cloud * 1.20 - 0.42 + coreBias) * window;
+            // Discard truly empty fragments so the edge frays — every alpha
+            // ramp ends at exactly 0 and the silhouette is the noise level
+            // set, not a smooth gradient disk.
+            if (density < 0.004) discard;
+
+            // H-alpha + ionized oxygen palette: pink core, magenta/violet halo.
             vec3 coreCol = vec3(1.0, 0.55, 0.75);
             vec3 outerCol = vec3(0.55, 0.35, 0.85);
-            vec3 col = mix(outerCol, coreCol, clamp(density * 1.2, 0.0, 1.0));
+            vec3 col = mix(outerCol, coreCol, clamp(density * 1.6, 0.0, 1.0));
             vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
             col *= tint;
             float massPunch = smoothstep(8.0, 80.0, uMass);
-            float a = clamp(density * (0.55 + 0.45 * massPunch), 0.0, 0.85);
+            float a = clamp(density * (0.55 + 0.40 * massPunch), 0.0, 0.72);
             a *= 1.0 - 0.30 * uRedshift;
             gl_FragColor = vec4(col * (0.65 + density * 0.9), a);
           }
@@ -1551,6 +1601,9 @@ export class Scene {
         uMass: { value: 0 },
         uColor: { value: new THREE.Color(1.0, 0.92, 0.78) },
         uAccretion: { value: 0 },
+        // Per-effector seed (set at construction from eff.id) used by the
+        // nebula shader to decorrelate its noise field. Other types ignore it.
+        uSeed: { value: 0 },
       },
       vertexShader: `
         varying vec2 vUv;

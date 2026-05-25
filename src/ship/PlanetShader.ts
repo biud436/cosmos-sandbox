@@ -267,14 +267,17 @@ function deriveTints(planet: Planet): { c2: THREE.Color; c3: THREE.Color } {
 
 // How aggressively each class bends the normal from the height gradient.
 // Gas giants and oceans have ~no relief; rock/lava/ice get meaningful bump.
+// Values tuned down from earlier so the perturbed normals don't flip past
+// the geometric outward — strong noise gradients × high uBump was creating
+// "noisy" shading that read as a thin/transparent surface.
 function bumpStrengthFor(cls: PlanetClass): number {
   switch (cls) {
-    case 'rock':   return 0.85;
-    case 'desert': return 0.55;
-    case 'ocean':  return 0.55;  // only continents bump; water stays flat by heightFn
-    case 'ice':    return 0.70;
+    case 'rock':   return 0.45;
+    case 'desert': return 0.30;
+    case 'ocean':  return 0.30;  // only continents bump; water stays flat by heightFn
+    case 'ice':    return 0.38;
     case 'gas':    return 0.0;
-    case 'lava':   return 0.90;
+    case 'lava':   return 0.50;
   }
 }
 

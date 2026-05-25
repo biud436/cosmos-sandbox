@@ -13,11 +13,11 @@ export const LIGHTSPEED_UNITS = 60;
 // FTL "warp" (the fictional one). Each mode caps maxSpeed differently;
 // Shift "boost" multiplies the cap ×2 inside whichever mode is active.
 //
-// Speeds are anchored to LIGHTSPEED_UNITS so the c-readout stays honest:
-//   approach: 0.5 u/s    ≈ 2.5 km/s    (orbital docking pace)
-//   cruise:   12 u/s     ≈ 60 km/s     (0.2c — current/historic default)
-//   high:     60 u/s     ≈ 300,000 km/s (1.0c — relativistic)
-//   warp:     600 u/s    ≈ 10c         (fictional spacetime-compression drive)
+// Speeds are anchored to LIGHTSPEED_UNITS, displayed only as a c-fraction:
+//   approach: 0.5 u/s    ≈ 0.008c   (orbital docking pace)
+//   cruise:   12 u/s     = 0.20c    (interplanetary cruise)
+//   high:     60 u/s     = 1.00c    (interstellar relativistic)
+//   warp:     600 u/s    = 10c      (fictional spacetime-compression drive)
 export type PropulsionMode = 'approach' | 'cruise' | 'high' | 'warp';
 
 export interface PropulsionModeSpec {
@@ -28,10 +28,10 @@ export interface PropulsionModeSpec {
 }
 
 export const PROPULSION_SPECS: Record<PropulsionMode, PropulsionModeSpec> = {
-  approach: { id: 'approach', label: '근접', description: '근접 기동 · ~2 km/s · 행성 도킹용',                   maxSpeed: 0.5 },
-  cruise:   { id: 'cruise',   label: '순항', description: '순항 · ~60 km/s · 행성 간 이동',                        maxSpeed: 0.2 * LIGHTSPEED_UNITS },
-  high:     { id: 'high',     label: '고속', description: '고속 항해 · 광속 · 항성 간 이동',                        maxSpeed: LIGHTSPEED_UNITS },
-  warp:     { id: 'warp',     label: '워프', description: '워프 · 시공간 압축 · ~10c · 은하 횡단용 (가상 추진)', maxSpeed: 10 * LIGHTSPEED_UNITS },
+  approach: { id: 'approach', label: '근접', description: '근접 기동 · 0.008c · 행성 도킹용',                       maxSpeed: 0.5 },
+  cruise:   { id: 'cruise',   label: '순항', description: '순항 · 0.2c · 행성 간 이동',                              maxSpeed: 0.2 * LIGHTSPEED_UNITS },
+  high:     { id: 'high',     label: '고속', description: '고속 항해 · 1c · 항성 간 이동',                            maxSpeed: LIGHTSPEED_UNITS },
+  warp:     { id: 'warp',     label: '워프', description: '워프 · 10c · 시공간 압축 · 은하 횡단용 (가상 추진)',     maxSpeed: 10 * LIGHTSPEED_UNITS },
 };
 
 export const PROPULSION_ORDER: PropulsionMode[] = ['approach', 'cruise', 'high', 'warp'];

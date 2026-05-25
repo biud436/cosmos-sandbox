@@ -18,14 +18,20 @@ const ORBIT_SEGMENTS = 96;
 //   tint: rim color
 //   thickness: scales rim alpha — thicker for gaseous/oceanic worlds.
 //   scale: shell radius relative to planet (1.05 = 5% larger).
+//
+// Values halved from the original tuning: the previous thicknesses (0.45-1.10)
+// pushed the additive rim halo past the planet's silhouette so brightly that
+// the surface read as "see-through" at the edge — the user's "행성 표면이
+// 너무 투명합니다" complaint. The current values keep a visible limb glow
+// without overwhelming the planet's solid body.
 function atmosphereOf(cls: PlanetClass): { tint: THREE.Color; thickness: number; scale: number } | null {
   switch (cls) {
     case 'lava':   return null;
-    case 'rock':   return { tint: new THREE.Color(0.72, 0.78, 0.92), thickness: 0.45, scale: 1.03 };
-    case 'desert': return { tint: new THREE.Color(0.98, 0.78, 0.55), thickness: 0.80, scale: 1.05 };
-    case 'ocean':  return { tint: new THREE.Color(0.55, 0.78, 1.00), thickness: 1.10, scale: 1.06 };
-    case 'ice':    return { tint: new THREE.Color(0.82, 0.92, 1.00), thickness: 0.35, scale: 1.025 };
-    case 'gas':    return { tint: new THREE.Color(0.95, 0.85, 0.65), thickness: 1.00, scale: 1.04 };
+    case 'rock':   return { tint: new THREE.Color(0.72, 0.78, 0.92), thickness: 0.22, scale: 1.03 };
+    case 'desert': return { tint: new THREE.Color(0.98, 0.78, 0.55), thickness: 0.40, scale: 1.05 };
+    case 'ocean':  return { tint: new THREE.Color(0.55, 0.78, 1.00), thickness: 0.55, scale: 1.06 };
+    case 'ice':    return { tint: new THREE.Color(0.82, 0.92, 1.00), thickness: 0.18, scale: 1.025 };
+    case 'gas':    return { tint: new THREE.Color(0.95, 0.85, 0.65), thickness: 0.50, scale: 1.04 };
   }
 }
 
@@ -76,14 +82,16 @@ function createAtmosphereMaterial(tint: THREE.Color, thickness: number, hasSun: 
         vec3 N = normalize(vWorldNormal);
         vec3 V = normalize(cameraPosition - vWorldPos);
         float NdotV = abs(dot(N, V));
-        // Sharp rim falloff — pow(1-NdotV, 2.5) keeps the dome subtle in the
-        // middle and bright at the limb.
-        float rim = pow(1.0 - NdotV, 2.5);
+        // Sharper rim falloff (3.0 instead of 2.5) concentrates the halo at
+        // the limb so the rim doesn't bleed inward across the planet edge.
+        float rim = pow(1.0 - NdotV, 3.0);
         // Day-side bias: scattering brightest where the planet faces the star,
         // dimmest at midnight. Without a sun (BH/NS host), we skip the bias.
         float day = mix(1.0, max(dot(N, uSunDir), 0.0) * 0.85 + 0.15, uHasSun);
-        float a = rim * day * uThickness * 0.85;
-        gl_FragColor = vec4(uColor, clamp(a, 0.0, 0.95));
+        // Reduce the global multiplier and tighten the alpha cap so the
+        // atmosphere reads as glow, not as a wash.
+        float a = rim * day * uThickness * 0.65;
+        gl_FragColor = vec4(uColor, clamp(a, 0.0, 0.55));
       }
     `,
   });

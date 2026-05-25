@@ -1,38 +1,40 @@
 import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
-import { LIGHTSPEED_UNITS, PROPULSION_SPECS, ShipState } from './ShipController';
+import { PROPULSION_SPECS, ShipState } from './ShipController';
 
-// Real-unit display for spaceship mode. The sim is unitless internally
-// ("u"), but the ship controller pins c = LIGHTSPEED_UNITS u/s — that's
-// the only anchor we have to real space, so all displayed distances are
-// converted through it: 1 u = c / LIGHTSPEED_UNITS km/s ≈ 4,996.54 km.
+// Cosmic-unit display for spaceship mode. The sim is unitless internally
+// ("u"), and km is too granular for "space" — at the c-anchored scale a
+// 60-u planet orbit reads as a few hundred thousand km, which feels
+// Earth-orbital rather than stellar. So we pick a display anchor where AU
+// is the natural unit:
 //
-// Resulting scale: a 60-u planet orbit ≈ 300,000 km (Earth–Moon-ish), a
-// 150-u box ≈ 750,000 km. The sim is compressed to roughly solar-system
-// neighborhood scale, so AU appears only on the outer system and ly is
-// effectively unreachable — but the formatter handles those too.
-const C_KMS = 299792.458; // speed of light, km/s
-const KM_PER_U = C_KMS / LIGHTSPEED_UNITS;
+//   1 u  ≈ 0.10 AU = 1.4960 × 10⁷ km
+//
+// Under this, typical planet orbits (5-60 u) land at 0.5-6 AU — the same
+// rough scale as Mercury-to-Jupiter. The c-fraction display still uses the
+// LIGHTSPEED_UNITS anchor (c = 60 u/s), so it remains a meaningful
+// relative-speed reference, but at this redefined display scale it no
+// longer matches physical c — the sim is openly stylized (warp drive,
+// compressed simulation time), not Earth-physics-accurate.
+const AU_PER_U = 0.10;
 const KM_PER_AU = 149_597_870.7;
 const KM_PER_LY = 9.4607304725808e12;
+const AU_PER_LY = KM_PER_LY / KM_PER_AU; // ≈ 63,241.077
 
 export function formatRealDistance(u: number): string {
-  const km = u * KM_PER_U;
-  // Light-year tier (effectively unused at current sim scale but here for
-  // future-proofing — Hubble expansion could push readings beyond an AU).
-  if (km >= KM_PER_LY * 0.05) return `${(km / KM_PER_LY).toFixed(2)} ly`;
-  if (km >= KM_PER_AU * 0.05) return `${(km / KM_PER_AU).toFixed(2)} AU`;
-  if (km >= 1e6) return `${(km / 1e3).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} km`;
-  if (km >= 100) return `${km.toFixed(0)} km`;
-  if (km >= 1) return `${km.toFixed(1)} km`;
+  const au = u * AU_PER_U;
+  // Interstellar tier — Hubble expansion across long sessions can push reads
+  // here even though most ship-mode work happens far below this threshold.
+  if (au >= AU_PER_LY * 0.1) return `${(au / AU_PER_LY).toFixed(2)} ly`;
+  // The natural readout for almost everything the player measures.
+  if (au >= 1000) return `${au.toFixed(0)} AU`;
+  if (au >= 10)   return `${au.toFixed(1)} AU`;
+  if (au >= 0.01) return `${au.toFixed(2)} AU`;
+  // Sub-mAU — only relevant for very close-in maneuvering; fall back to km.
+  const km = au * KM_PER_AU;
+  if (km >= 1e6) return `${(km / 1e6).toFixed(2)} Mkm`;
+  if (km >= 1)   return `${km.toFixed(0)} km`;
   return `${(km * 1000).toFixed(0)} m`;
-}
-
-function formatRealSpeed(uPerSec: number): string {
-  const kms = uPerSec * KM_PER_U; // km/s
-  if (kms >= 1000) return `${(kms / 1000).toFixed(2)} Mm/s`;
-  if (kms >= 1) return `${kms.toFixed(1)} km/s`;
-  return `${(kms * 1000).toFixed(0)} m/s`;
 }
 
 export interface HUDTarget {
@@ -167,7 +169,9 @@ export class ShipHUD {
     this.posEl.textContent = `${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}`;
     const v = state.velocity;
     this.velEl.textContent = `${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)}`;
-    this.spdEl.innerHTML = `${formatRealSpeed(state.speed)} · <b>${state.speedC.toFixed(3)} c</b>${state.boosting ? ' · BOOST' : ''}`;
+    // Space speed: only the c-fraction. km/s would conflict with the AU-anchored
+    // distance scale (the two would imply different KM_PER_U), so we drop it.
+    this.spdEl.innerHTML = `<b>${state.speedC.toFixed(3)} c</b>${state.boosting ? ' · BOOST' : ''}`;
     this.thrFill.style.width = `${(state.throttleNormalized * 100).toFixed(1)}%`;
     if (state.boosting) this.thrFill.classList.add('boost');
     else this.thrFill.classList.remove('boost');
