@@ -1037,54 +1037,77 @@ export class Scene {
 
     if (!this.visibility.orbits) { clearAll(); return; }
     const sel = this.selectedEffector;
-    if (!sel || (sel.type !== 'star' && sel.type !== 'blackhole')) { clearAll(); return; }
+    if (!sel || (sel.type !== 'star' && sel.type !== 'blackhole' && sel.type !== 'neutron_star')) {
+      clearAll();
+      return;
+    }
 
-    const bhs: Effector[] = [];
-    const stars: Effector[] = [];
+    // Anything massive can act as a Kepler host — light BHs and NS still pull.
+    const massive: Effector[] = [];
     for (const e of sim.effectors) {
       if (e === sel) continue;
-      if (e.type === 'blackhole') bhs.push(e);
-      else if (e.type === 'star') stars.push(e);
+      if (e.type === 'blackhole' || e.type === 'star' || e.type === 'neutron_star') {
+        massive.push(e);
+      }
     }
 
     const G = sim.effectorPairG;
-    const Gstar = G * sim.starStarGMul;
 
-    // Find the body the selected effector is orbiting: most-bound BH first.
+    // The effective central GM should include the diffuse DM halo + gas the
+    // body actually feels through Barnes-Hut self-gravity, not just the point
+    // mass of a single companion. We add an "environment boost" proportional
+    // to selfGravity so deeply-embedded bodies get a sensible orbit even
+    // when their pointmass companion is weak.
+    //
+    // Plus a Hubble-expansion compensation factor: lab-frame separation grew
+    // by effectorScaleFactor since Dark Energy began, which made PE = -GM/r
+    // shrink. Boost GM by the same factor so previously-bound orbits remain
+    // recognized as bound in the Kepler predictor.
+    const envBoost = (sim.selfGravity > 0 ? 1.0 + sim.selfGravity * 1.5 : 1.0)
+                   * sim.effectorScaleFactor;
+
     let host: { x: number; y: number; z: number } | null = null;
     let hostGM = 0, hostEnergy = 0;
     let hostRx = 0, hostRy = 0, hostRz = 0;
     let hostVx = 0, hostVy = 0, hostVz = 0;
     let hostRMag = 0;
-    for (const bh of bhs) {
-      if (bh.strength < sel.strength * 1.2) continue;
-      const rxB = sel.x - bh.x;
-      const ryB = sel.y - bh.y;
-      const rzB = sel.z - bh.z;
+
+    // Pass 1: any individual heavier body that produces a bound orbit.
+    for (const m of massive) {
+      if (m.strength < sel.strength * 0.5) continue; // need at least half our mass
+      const rxB = sel.x - m.x;
+      const ryB = sel.y - m.y;
+      const rzB = sel.z - m.z;
       const rMagB = Math.sqrt(rxB * rxB + ryB * ryB + rzB * rzB);
       if (rMagB < 1e-3) continue;
-      const vxB = sel.vx - bh.vx;
-      const vyB = sel.vy - bh.vy;
-      const vzB = sel.vz - bh.vz;
+      const vxB = sel.vx - m.vx;
+      const vyB = sel.vy - m.vy;
+      const vzB = sel.vz - m.vz;
       const v2B = vxB * vxB + vyB * vyB + vzB * vzB;
-      const GMB = G * bh.strength;
+      const GMB = G * m.strength * envBoost;
       const eB = 0.5 * v2B - GMB / rMagB;
       if (eB >= 0) continue;
       if (!host || eB < hostEnergy) {
-        host = bh;
+        host = m;
         hostEnergy = eB; hostGM = GMB;
         hostRx = rxB; hostRy = ryB; hostRz = rzB;
         hostVx = vxB; hostVy = vyB; hostVz = vzB;
         hostRMag = rMagB;
       }
     }
-    // Fall back to stellar cluster COM if no BH host.
-    if (!host && stars.length >= 3) {
+
+    // Pass 2 (fallback): cluster center of mass. Works even with a single
+    // companion, and lets dwarf clusters / DM-bound stars show an orbit.
+    if (!host && massive.length >= 1) {
       let mx = 0, my = 0, mz = 0, mvx = 0, mvy = 0, mvz = 0, totM = 0;
-      for (const s of stars) {
-        mx += s.x * s.strength; my += s.y * s.strength; mz += s.z * s.strength;
-        mvx += s.vx * s.strength; mvy += s.vy * s.strength; mvz += s.vz * s.strength;
-        totM += s.strength;
+      for (const m of massive) {
+        mx += m.x * m.strength;
+        my += m.y * m.strength;
+        mz += m.z * m.strength;
+        mvx += m.vx * m.strength;
+        mvy += m.vy * m.strength;
+        mvz += m.vz * m.strength;
+        totM += m.strength;
       }
       if (totM > 0) {
         mx /= totM; my /= totM; mz /= totM;
@@ -1098,7 +1121,9 @@ export class Scene {
           const vyC = sel.vy - mvy;
           const vzC = sel.vz - mvz;
           const v2C = vxC * vxC + vyC * vyC + vzC * vzC;
-          const GMC = Gstar * totM * 0.65;
+          // Inflate GM by the env boost too — bodies orbit the cluster +
+          // its embedded DM halo, not just visible stars.
+          const GMC = G * totM * envBoost * 1.3;
           const eC = 0.5 * v2C - GMC / rMagC;
           if (eC < 0) {
             host = { x: mx, y: my, z: mz };
@@ -1110,6 +1135,9 @@ export class Scene {
         }
       }
     }
+
+    // No bound system found — body is unbound or in free streaming. The
+    // recorded trail (drawn by recordTrail) is the only valid indicator.
     if (!host) { clearAll(); return; }
 
     const GM = hostGM;
@@ -1127,7 +1155,8 @@ export class Scene {
     const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
     const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
     const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
-    if (e >= 0.95) { clearAll(); return; }
+    // Allow highly eccentric orbits — only reject literally unbound.
+    if (e >= 0.99) { clearAll(); return; }
 
     const eHatX = e > 1e-6 ? evx / e : rx / rMag;
     const eHatY = e > 1e-6 ? evy / e : ry / rMag;

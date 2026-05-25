@@ -142,6 +142,10 @@ export class Simulator {
   // central concentration of stars/BHs instead of letting BHs eat everything.
   applyEffectorHubbleFlow = false;
   scaleFactor = 1.0;
+  // Separate scale factor tracking *just* for effectors, since they expand
+  // at half rate. Used by the orbit predictor so post-expansion orbits still
+  // read as bound (compensates the GM/r reduction caused by lab-frame scaling).
+  effectorScaleFactor = 1.0;
 
   // Chemical evolution: cumulative metal mass ejected by supernovae. New
   // stars inherit a metallicity proxy = metalMass / (metalMass + scaleRef)
@@ -348,6 +352,7 @@ export class Simulator {
     this.nebulaFormationTimer = 0;
     this.nebulaCounter = 0;
     this.metalMass = 0;
+    this.effectorScaleFactor = 1.0;
     this.evSnTypeII = 0;
     this.evSnNS = 0;
     this.evSnPair = 0;
@@ -574,6 +579,7 @@ export class Simulator {
     // intergalactic distances grow while tight orbits mostly survive.
     if (this.applyEffectorHubbleFlow && this.effectors.length > 0) {
       const efactor = 1 + (H * 0.5) * dt;
+      this.effectorScaleFactor *= efactor;
       for (const e of this.effectors) {
         e.x *= efactor;
         e.y *= efactor;

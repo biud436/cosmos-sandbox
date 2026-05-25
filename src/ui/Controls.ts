@@ -405,6 +405,14 @@ export class Controls {
 
     const folder = this.gui.addFolder(`▸ Selected · ${eff.type}`);
     folder.open();
+
+    // Reposition the selected folder to the TOP of the GUI's children list so
+    // it's immediately visible rather than buried below the parameter folders.
+    const guiChildren = (this.gui as unknown as { $children: HTMLElement }).$children;
+    const folderEl = (folder as unknown as { domElement: HTMLElement }).domElement;
+    if (guiChildren && folderEl && guiChildren.firstChild) {
+      guiChildren.insertBefore(folderEl, guiChildren.firstChild);
+    }
     folder.add(eff, 'x', -30, 30, 0.1).name('Position X').listen();
     folder.add(eff, 'y', -30, 30, 0.1).name('Position Y').listen();
     folder.add(eff, 'z', -30, 30, 0.1).name('Position Z').listen();
