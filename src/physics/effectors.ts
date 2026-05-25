@@ -122,17 +122,17 @@ function handleEffectorCollisions(sim: Simulator): void {
 
       if (a.type === 'blackhole' && b.type === 'blackhole') {
         if (r < (a.radius + b.radius) * 0.7) {
-          mergeBlackHoles(a, b);
+          mergeBlackHoles(sim, a, b);
           removed.add(b);
         }
       } else if (a.type === 'blackhole' && b.type === 'star') {
         if (r < a.radius * sim.starConsumeRadiusMul) {
-          consumeStar(a, b);
+          consumeStar(sim, a, b);
           removed.add(b);
         }
       } else if (a.type === 'star' && b.type === 'blackhole') {
         if (r < b.radius * sim.starConsumeRadiusMul) {
-          consumeStar(b, a);
+          consumeStar(sim, b, a);
           removed.add(a);
           break;
         }
@@ -156,7 +156,7 @@ function handleEffectorCollisions(sim: Simulator): void {
         const bh = a.type === 'blackhole' ? a : b;
         const ns = a.type === 'blackhole' ? b : a;
         if (r < bh.radius * sim.starConsumeRadiusMul) {
-          consumeStar(bh, ns);
+          consumeStar(sim, bh, ns);
           removed.add(ns);
           if (ns === a) break;
         }
@@ -183,7 +183,7 @@ function handleEffectorCollisions(sim: Simulator): void {
   }
 }
 
-function mergeBlackHoles(a: Effector, b: Effector): void {
+function mergeBlackHoles(sim: Simulator, a: Effector, b: Effector): void {
   const ma = a.strength;
   const mb = b.strength;
   const total = ma + mb;
@@ -196,6 +196,7 @@ function mergeBlackHoles(a: Effector, b: Effector): void {
   a.strength = total;
   a.radius = Math.min(2.0, Math.cbrt(a.radius ** 3 + b.radius ** 3));
   a.consumed += b.consumed;
+  sim.evBHMerger++;
 }
 
 function mergeStars(sim: Simulator, a: Effector, b: Effector): boolean {
@@ -224,6 +225,7 @@ function mergeStars(sim: Simulator, a: Effector, b: Effector): boolean {
       bh.strength = total * (1 - ejectaFraction);
       bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
     }
+    sim.evSnDirect++;
     sim.onSupernova?.([mx, my, mz], total);
     return true;
   }
@@ -238,6 +240,7 @@ function mergeStars(sim: Simulator, a: Effector, b: Effector): boolean {
   a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
   // Refresh born-at so the merged giant gets a fresh lifetime budget
   a.bornAt = sim.simTime;
+  sim.evStellarMerger++;
   sim.onStellarMerger?.([mx, my, mz], total);
   return false;
 }
@@ -266,10 +269,11 @@ function mergeNeutronStars(sim: Simulator, a: Effector, b: Effector): void {
   bh.strength = total * 0.95;
   bh.radius = Math.max(0.45, Math.cbrt(bh.strength) * 0.18);
 
+  sim.evKilonova++;
   sim.onSupernova?.([mx, my, mz], total);
 }
 
-function consumeStar(bh: Effector, star: Effector): void {
+function consumeStar(sim: Simulator, bh: Effector, star: Effector): void {
   const ma = bh.strength;
   const dm = star.strength * 0.6;
   const total = ma + dm;
@@ -282,6 +286,7 @@ function consumeStar(bh: Effector, star: Effector): void {
   bh.strength = total;
   bh.radius = Math.min(1.0, Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.1));
   bh.consumed += 1;
+  sim.evStarConsumed++;
 }
 
 export function applyEffectors(sim: Simulator): void {

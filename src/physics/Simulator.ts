@@ -45,6 +45,19 @@ export interface SimStats {
   meanStellarMetallicity: number;
   hubbleRate: number;
   currentEra: string;
+
+  // Cumulative event tallies, categorized
+  eventCounts: {
+    snTypeII: number;
+    snNS: number;
+    snPair: number;
+    snDirect: number;
+    stellarMerger: number;
+    bhMerger: number;
+    kilonova: number;
+    starConsumed: number;
+    nebulaMerger: number;
+  };
 }
 
 export interface FusionEvent {
@@ -136,6 +149,18 @@ export class Simulator {
   // late-generation stars get progressively enriched.
   metalMass = 0;
   metallicityScale = 200;
+
+  // Cumulative event tallies — categorical so the UI can show "how this run
+  // played out" at a glance (Type II SN, kilonovae, pair-instability, etc.).
+  evSnTypeII = 0;
+  evSnNS = 0;
+  evSnPair = 0;
+  evSnDirect = 0;
+  evStellarMerger = 0;
+  evBHMerger = 0;
+  evKilonova = 0;
+  evStarConsumed = 0;
+  evNebulaMerger = 0;
   openBoundary = false;
   starFormationEnabled = false;
   starFormationRadius = 1.4;
@@ -314,6 +339,15 @@ export class Simulator {
     this.nebulaFormationTimer = 0;
     this.nebulaCounter = 0;
     this.metalMass = 0;
+    this.evSnTypeII = 0;
+    this.evSnNS = 0;
+    this.evSnPair = 0;
+    this.evSnDirect = 0;
+    this.evStellarMerger = 0;
+    this.evBHMerger = 0;
+    this.evKilonova = 0;
+    this.evStarConsumed = 0;
+    this.evNebulaMerger = 0;
     this.scaleFactor = 1.0;
     this.firedEventCount = 0;
     this.firedEvents = [];
@@ -1128,6 +1162,18 @@ export class Simulator {
       meanStellarMetallicity: zCount > 0 ? zSum / zCount : 0,
       hubbleRate: this.currentHubble(),
       currentEra,
+
+      eventCounts: {
+        snTypeII: this.evSnTypeII,
+        snNS: this.evSnNS,
+        snPair: this.evSnPair,
+        snDirect: this.evSnDirect,
+        stellarMerger: this.evStellarMerger,
+        bhMerger: this.evBHMerger,
+        kilonova: this.evKilonova,
+        starConsumed: this.evStarConsumed,
+        nebulaMerger: this.evNebulaMerger,
+      },
     };
   }
 }

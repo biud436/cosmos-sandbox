@@ -525,6 +525,7 @@ function endOfStarLife(sim: Simulator, star: Effector): void {
     ns.strength = M * (1 - ejectaFraction);
     ns.radius = 0.45;
 
+    sim.evSnNS++;
     sim.onSupernova?.([star.x, star.y, star.z], M);
 
   } else if (M < pairInstabilityLo) {
@@ -537,11 +538,14 @@ function endOfStarLife(sim: Simulator, star: Effector): void {
     bh.strength = M * (1 - ejectaFraction);
     bh.radius = Math.max(0.5, Math.cbrt(bh.strength) * 0.18);
 
+    sim.evSnTypeII++;
     sim.onSupernova?.([star.x, star.y, star.z], M);
 
   } else if (M < directCollapseLo) {
     // Pair-instability SN: total disruption, NO remnant
     ejectSupernovaParticles(sim, star.x, star.y, star.z, star.vx, star.vy, star.vz, M * 0.95);
+
+    sim.evSnPair++;
     sim.onSupernova?.([star.x, star.y, star.z], M);
 
   } else {
@@ -554,6 +558,7 @@ function endOfStarLife(sim: Simulator, star: Effector): void {
     bh.strength = M * (1 - ejectaFraction);
     bh.radius = Math.max(0.7, Math.cbrt(bh.strength) * 0.20);
 
+    sim.evSnDirect++;
     sim.onSupernova?.([star.x, star.y, star.z], M);
   }
 

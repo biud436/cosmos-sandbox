@@ -57,6 +57,18 @@ export class Layout {
   private readonly sZStars = document.getElementById('s-zstars')!;
   private readonly sZ = document.getElementById('s-z')!;
   private readonly sSfTotal = document.getElementById('s-sf-total')!;
+
+  private readonly evIds: { id: string; key: keyof ReturnType<Simulator['stats']>['eventCounts']; el: HTMLElement }[] = [
+    { id: 'ev-sn-typeII',       key: 'snTypeII',       el: null as unknown as HTMLElement },
+    { id: 'ev-sn-ns',           key: 'snNS',           el: null as unknown as HTMLElement },
+    { id: 'ev-sn-pair',         key: 'snPair',         el: null as unknown as HTMLElement },
+    { id: 'ev-sn-direct',       key: 'snDirect',       el: null as unknown as HTMLElement },
+    { id: 'ev-stellar-merger',  key: 'stellarMerger',  el: null as unknown as HTMLElement },
+    { id: 'ev-bh-merger',       key: 'bhMerger',       el: null as unknown as HTMLElement },
+    { id: 'ev-kilonova',        key: 'kilonova',       el: null as unknown as HTMLElement },
+    { id: 'ev-star-consumed',   key: 'starConsumed',   el: null as unknown as HTMLElement },
+    { id: 'ev-nebula-merger',   key: 'nebulaMerger',   el: null as unknown as HTMLElement },
+  ];
   private readonly viewport = document.getElementById('viewport')!;
 
   private hierRows = new Map<string, { dot: HTMLElement; name: HTMLElement; count: HTMLElement; row: HTMLElement }>();
@@ -99,6 +111,9 @@ export class Layout {
 
   constructor() {
     SPECIES;
+    for (const e of this.evIds) {
+      e.el = document.getElementById(e.id)!;
+    }
   }
 
   private updateHierarchy(entries: MoleculeEntry[]): void {
@@ -245,6 +260,10 @@ export class Layout {
     this.sDM.textContent = stats.darkMass.toFixed(0);
     this.sBary.textContent = stats.baryonMass.toFixed(1);
     this.sFus.textContent = String(stats.fusionEvents);
+
+    for (const e of this.evIds) {
+      e.el.textContent = String(stats.eventCounts[e.key]);
+    }
 
     this.pushTimeSeriesSample(stats);
     this.drawTimeSeriesChart();

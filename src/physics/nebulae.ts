@@ -138,6 +138,7 @@ function mergeOverlappingNebulae(sim: Simulator): void {
       keeper.strength = total;
       keeper.radius = Math.min(sim.nebulaRadiusCap, Math.sqrt(total) * sim.nebulaRadiusCoeff);
       removed.add(other);
+      sim.evNebulaMerger++;
     }
   }
   if (removed.size === 0) return;
