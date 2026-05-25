@@ -123,10 +123,24 @@ layout.setEffectorClickHandler((eff) => {
 });
 
 sim.onEffectorRemoved = (eff, reason) => {
-  scene.setSelectedEffector(null);
-  controls.showSelectedEffector(null);
-  if (reason === 'merged')   layout.log(`Black hole merged · M=${eff.strength.toFixed(0)}`, 'event');
-  if (reason === 'consumed') layout.log(`Star consumed by black hole`, 'event');
+  // Only clear the selection if THIS effector was the one being watched —
+  // otherwise every SN/merger in the simulation breaks the camera follow.
+  if (scene.getSelectedEffector() === eff) {
+    scene.setSelectedEffector(null);
+    controls.showSelectedEffector(null);
+  }
+
+  if (reason === 'merged') {
+    if (eff.type === 'blackhole')        layout.log(`● BH merged · M=${eff.strength.toFixed(0)}`, 'event');
+    else if (eff.type === 'neutron_star') layout.log(`⚪ NS merged (kilonova)`, 'event');
+    else                                  layout.log(`${eff.type} merged · M=${eff.strength.toFixed(0)}`, 'event');
+  }
+  if (reason === 'consumed') {
+    if (eff.type === 'star')              layout.log(`★ Star consumed by BH`, 'event');
+    else if (eff.type === 'neutron_star') layout.log(`⚪ NS consumed by BH`, 'event');
+    else if (eff.type === 'nebula')       layout.log(`☁ Nebula dispersed`, 'event');
+    else                                  layout.log(`${eff.type} consumed`, 'event');
+  }
   if (reason === 'manual')   layout.log(`${eff.type} removed`);
 };
 

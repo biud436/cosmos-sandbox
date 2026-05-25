@@ -1621,6 +1621,10 @@ export class Scene {
     }
   }
 
+  getSelectedEffector(): Effector | null {
+    return this.selectedEffector;
+  }
+
   // Camera lock-on: once an effector is selected, the camera tracks its
   // motion every frame so the user can keep watching it. The anchor stores
   // where the effector was last frame so we can apply the delta to both the
