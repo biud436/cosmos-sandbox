@@ -292,13 +292,21 @@ export interface PlanetMaterialHandle {
 
 export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
   const { c2, c3 } = deriveTints(planet);
+  // Self-emissive floor. Three.js MeshStandardMaterial uses physically-based
+  // lighting where the ambient/PI term is quite dim, and at the wider orbital
+  // distances of the current planet system the point light from the host
+  // star also falls off heavily. Without a meaningful emissive floor the
+  // planet body reads as black against the void, leaving only the atmosphere
+  // rim halo visible. 18% of base color keeps the planet self-lit enough to
+  // register as a body, without overpowering proper sunlit contrast.
+  const baseEmissive = planet.planetClass === 'lava'
+    ? new THREE.Color(0.22, 0.08, 0.03)
+    : new THREE.Color(planet.color[0] * 0.18, planet.color[1] * 0.18, planet.color[2] * 0.18);
   const mat = new THREE.MeshStandardMaterial({
     color: new THREE.Color(planet.color[0], planet.color[1], planet.color[2]),
     roughness: planet.planetClass === 'ocean' ? 0.4 : planet.planetClass === 'ice' ? 0.55 : 0.85,
     metalness: planet.planetClass === 'lava' ? 0.0 : 0.05,
-    emissive: planet.planetClass === 'lava'
-      ? new THREE.Color(0.12, 0.04, 0.02)
-      : new THREE.Color(planet.color[0] * 0.04, planet.color[1] * 0.04, planet.color[2] * 0.05),
+    emissive: baseEmissive,
   });
 
   // Uniforms live on the shader once compiled. We capture references here so

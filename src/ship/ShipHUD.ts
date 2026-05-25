@@ -58,9 +58,29 @@ export function formatInterstellarDistance(u: number): string {
   return `${au.toFixed(3)} AU`;
 }
 
-/** Pick the right scale for a HUDTarget based on its kind. */
+// Threshold (in u) between "inside a star system" and "interstellar void."
+// Picked at the outer-planet orbit limit set by PlanetSystem (innerR up to
+// 13× eff.radius × outerR multiplier up to 6 ≈ 78u worst case). 60u is a
+// comfortable break: a star within 60u is one the ship can plausibly be
+// orbiting / fly-by-ing in-system, anything beyond is "interstellar."
+const INTERSTELLAR_U_THRESHOLD = 60;
+
+/**
+ * Pick the right scale for a HUDTarget:
+ *   - Planet targets always use planetary AU (you're inside a system).
+ *   - Star targets are magnitude-aware: AU when close (the ship is currently
+ *     inside that star's planetary system), ly only when truly interstellar.
+ *     Fixes the "approaching the sun still shows ly" complaint — the AU read
+ *     reflects in-system distance the way real spacecraft instruments would.
+ */
 function formatTargetDistance(u: number, kind: 'planet' | 'star'): string {
-  return kind === 'star' ? formatInterstellarDistance(u) : formatPlanetaryDistance(u);
+  if (kind === 'planet') return formatPlanetaryDistance(u);
+  return u > INTERSTELLAR_U_THRESHOLD ? formatInterstellarDistance(u) : formatPlanetaryDistance(u);
+}
+
+/** NEAR readout — nearest stellar object. Same magnitude-aware pick. */
+function formatStellarDistance(u: number): string {
+  return u > INTERSTELLAR_U_THRESHOLD ? formatInterstellarDistance(u) : formatPlanetaryDistance(u);
 }
 
 /** Back-compat alias — defaults to planetary scale; existing callers in
@@ -208,8 +228,9 @@ export class ShipHUD {
 
     if (nearestStar) {
       const name = nearestStar.eff.name ?? `${nearestStar.eff.type}`;
-      // Nearest stellar object — always interstellar scale.
-      this.nearestEl.textContent = `${name} · ${formatInterstellarDistance(nearestStar.distance)}`;
+      // Nearest stellar object — magnitude-aware: AU when in-system, ly when
+      // traversing between systems.
+      this.nearestEl.textContent = `${name} · ${formatStellarDistance(nearestStar.distance)}`;
     } else {
       this.nearestEl.textContent = '—';
     }

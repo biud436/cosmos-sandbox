@@ -133,12 +133,18 @@ export class StarSystemView {
     // light to do the work. Range is set roughly to the outer planet so the
     // light doesn't leak across the entire scene.
     if (host.type === 'star') {
-      const intensity = Math.min(120, 30 + host.strength * 0.6);
+      // Bumped intensity + decay=1 (not physical inverse-square): with the
+      // wider orbit clearance (planets at 8-13× eff.radius), inverse-square
+      // falloff left mid/outer planets effectively unlit — they read as
+      // black silhouettes with only the atmospheric rim halo visible.
+      // Linear decay keeps far planets visible while still attenuating with
+      // distance, which is what the player intuitively expects from a star.
+      const intensity = Math.min(220, 60 + host.strength * 1.0);
       const tint = new THREE.Color(1.0, 0.95, 0.85);
       // Range = 0 means "infinite" in three.js, which would tint everything
       // in the simulation. Cap it to a few system widths.
-      const range = Math.max(40, host.radius * 80);
-      this.starLight = new THREE.PointLight(tint, intensity, range, 2);
+      const range = Math.max(80, host.radius * 120);
+      this.starLight = new THREE.PointLight(tint, intensity, range, 1);
       this.starLight.position.set(0, 0, 0);
       this.group.add(this.starLight);
     } else {
