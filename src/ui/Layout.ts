@@ -69,6 +69,20 @@ export class Layout {
   private yearsPerUnit = 10;
   private onSelectEffector: ((eff: Effector) => void) | null = null;
 
+  // Time-series buffer for the population mini-chart. Each updateStats tick
+  // pushes one sample; we keep a small rolling window so the chart stays
+  // legible without unbounded memory growth.
+  private readonly tsCanvas = document.getElementById('ts-chart') as HTMLCanvasElement;
+  private readonly tsLegend = document.getElementById('ts-legend')!;
+  private readonly tsSeries = [
+    { key: 'stars',   label: '★ 별',     color: '#ffe5b5', data: [] as number[] },
+    { key: 'bh',      label: '● BH',     color: '#ff9966', data: [] as number[] },
+    { key: 'ns',      label: '⚪ NS',    color: '#a5d2ff', data: [] as number[] },
+    { key: 'nebulae', label: '☁ 성운',   color: '#ff7ab2', data: [] as number[] },
+  ];
+  private readonly tsCapacity = 240;
+  private tsLegendBuilt = false;
+
   constructor() {
     SPECIES;
   }
@@ -217,6 +231,91 @@ export class Layout {
     this.sDM.textContent = stats.darkMass.toFixed(0);
     this.sBary.textContent = stats.baryonMass.toFixed(1);
     this.sFus.textContent = String(stats.fusionEvents);
+
+    this.pushTimeSeriesSample(stats);
+    this.drawTimeSeriesChart();
+  }
+
+  private pushTimeSeriesSample(stats: ReturnType<Simulator['stats']>): void {
+    const values = [stats.starsAlive, stats.blackHoles, stats.neutronStars, stats.nebulae];
+    for (let i = 0; i < this.tsSeries.length; i++) {
+      const s = this.tsSeries[i];
+      s.data.push(values[i]);
+      if (s.data.length > this.tsCapacity) s.data.shift();
+    }
+  }
+
+  private drawTimeSeriesChart(): void {
+    if (!this.tsCanvas) return;
+    const ctx = this.tsCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // Match backing-store resolution to CSS size for crisp lines
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = this.tsCanvas.clientWidth;
+    const cssH = this.tsCanvas.clientHeight;
+    if (this.tsCanvas.width !== cssW * dpr || this.tsCanvas.height !== cssH * dpr) {
+      this.tsCanvas.width = cssW * dpr;
+      this.tsCanvas.height = cssH * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    // Build legend once
+    if (!this.tsLegendBuilt) {
+      this.tsLegend.innerHTML = '';
+      for (const s of this.tsSeries) {
+        const span = document.createElement('span');
+        span.style.color = s.color;
+        span.textContent = s.label;
+        this.tsLegend.appendChild(span);
+      }
+      this.tsLegendBuilt = true;
+    }
+
+    // Y-axis autoscale (shared across series so they're comparable)
+    let maxV = 1;
+    for (const s of this.tsSeries) {
+      for (const v of s.data) if (v > maxV) maxV = v;
+    }
+
+    const padX = 4;
+    const padY = 4;
+    const plotW = cssW - padX * 2;
+    const plotH = cssH - padY * 2;
+
+    // Baseline + ceiling guide lines (subtle)
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padX, cssH - padY);
+    ctx.lineTo(cssW - padX, cssH - padY);
+    ctx.moveTo(padX, padY);
+    ctx.lineTo(cssW - padX, padY);
+    ctx.stroke();
+
+    // Series plots
+    for (const s of this.tsSeries) {
+      if (s.data.length < 2) continue;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      const n = s.data.length;
+      for (let i = 0; i < n; i++) {
+        const t = (n - 1) === 0 ? 0 : i / (n - 1);
+        const x = padX + t * plotW;
+        const y = padY + plotH - (s.data[i] / maxV) * plotH;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // Y-axis max label
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.font = '10px sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.fillText(String(Math.round(maxV)), padX + 2, padY + 1);
   }
 
   setDropHighlight(active: boolean): void {
