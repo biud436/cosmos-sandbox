@@ -71,6 +71,7 @@ export function checkStarFormation(sim: Simulator): void {
       }
     }
     if (inImmatureNebula) continue;
+
     const nearby: { idx: number; d2: number }[] = [];
     for (let j = 0; j < sim.count; j++) {
       if (j === seed.idx || claimed[j]) continue;
@@ -83,7 +84,27 @@ export function checkStarFormation(sim: Simulator): void {
     }
     if (nearby.length + 1 < threshold) continue;
     nearby.sort((a, b) => a.d2 - b.d2);
+
+    // Jeans-instability gate: hot gas resists gravitational collapse. We use
+    // the cluster's mean particle KE as a proxy for local temperature; if it
+    // exceeds the cap, this region is too hot for SF to proceed.
     const take = Math.min(nearby.length, targetSize - 1);
+    const sm = SPECIES[seed.sp].mass;
+    const svx = sim.velocities[seed.idx * 3 + 0];
+    const svy = sim.velocities[seed.idx * 3 + 1];
+    const svz = sim.velocities[seed.idx * 3 + 2];
+    let totKE = 0.5 * sm * (svx * svx + svy * svy + svz * svz);
+    for (let k = 0; k < take; k++) {
+      const j = nearby[k].idx;
+      const m = SPECIES[sim.species[j]].mass;
+      const vx = sim.velocities[j * 3 + 0];
+      const vy = sim.velocities[j * 3 + 1];
+      const vz = sim.velocities[j * 3 + 2];
+      totKE += 0.5 * m * (vx * vx + vy * vy + vz * vz);
+    }
+    const meanKE = totKE / (take + 1);
+    if (meanKE > sim.sfMaxMeanKE) continue;
+
     const cluster = [seed.idx];
     for (let k = 0; k < take; k++) cluster.push(nearby[k].idx);
     for (const idx of cluster) claimed[idx] = 1;

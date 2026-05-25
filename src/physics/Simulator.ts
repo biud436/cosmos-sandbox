@@ -129,6 +129,10 @@ export class Simulator {
   starFormationCooldown = 0.2;
   starFormationDMMin = 0;
   starFormationDMRadius = 3.0;
+  // Jeans-like gating: continuous SF only fires when the local gas mean KE
+  // is below this cap. Hot gas (e.g., fresh SN ejecta) has too much pressure
+  // support to collapse → realistic suppression of SF in hot regions.
+  sfMaxMeanKE = 1.5;
   // Exposed for sibling modules in this folder (nebulae.ts, starFormation.ts,
   // effectors.ts). Treat as package-internal — not intended for external use.
   readonly dmSpeciesId: number = SPECIES.findIndex((s) => s.name === 'DM');
