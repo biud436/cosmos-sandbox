@@ -95,7 +95,7 @@ export const PRESETS: Preset[] = [
           sim.starFormationEnabled = true;
           sim.starFormationRadius = 5.0;
           sim.starFormationCount = 3;
-          sim.forceFormStars(80, 5.0, 4);
+          sim.forceFormStars(140, 5.5, 3);
         },
       },
       {
@@ -105,9 +105,9 @@ export const PRESETS: Preset[] = [
         action: (sim) => {
           sim.seedGalaxies({
             galaxyCount: 14,
-            starsPerGalaxy: 30,
+            starsPerGalaxy: 45,
             radius: 12.0,
-            starClusterSize: 4,
+            starClusterSize: 3,
             orbitalSpeed: 1.0,
           });
         },
@@ -117,7 +117,32 @@ export const PRESETS: Preset[] = [
         name: 'Stellar Baby Boom',
         description: '남은 가스가 응집해 별이 폭발적으로 더 탄생합니다.',
         action: (sim) => {
-          sim.forceFormStars(150, 5.0, 4);
+          sim.forceFormStars(250, 5.5, 3);
+        },
+      },
+      {
+        time: 20.0,
+        name: 'Dark Energy Era',
+        description: '암흑 에너지가 우세해지며 우주가 다시 가속 팽창합니다. 별과 블랙홀이 중심에서 천천히 분산됩니다.',
+        action: (sim) => {
+          sim.hubbleRate = Math.max(sim.hubbleRate, 0.015);
+          sim.hubbleDecay = 0;
+          sim.applyEffectorHubbleFlow = true;
+          // Gentle one-time radial nudge — slow dispersal rather than violent push
+          for (const e of sim.effectors) {
+            if (e.type === 'repulsor' || e.type === 'freezer') continue;
+            const r = Math.hypot(e.x, e.y, e.z);
+            if (r < 1e-3) {
+              e.vx += (Math.random() - 0.5) * 0.15;
+              e.vy += (Math.random() - 0.5) * 0.15;
+              e.vz += (Math.random() - 0.5) * 0.15;
+              continue;
+            }
+            const k = 0.18 * Math.min(r, 50) / 50;
+            e.vx += (e.x / r) * k;
+            e.vy += (e.y / r) * k;
+            e.vz += (e.z / r) * k;
+          }
         },
       },
       {
@@ -125,7 +150,7 @@ export const PRESETS: Preset[] = [
         name: 'Second Wave',
         description: '남은 가스에서 다시 별이 형성됩니다.',
         action: (sim) => {
-          sim.forceFormStars(100, 6.0, 4);
+          sim.forceFormStars(180, 6.0, 3);
         },
       },
       {
@@ -133,7 +158,7 @@ export const PRESETS: Preset[] = [
         name: 'Late Star Formation',
         description: '잔존 가스로 마지막 별들이 태어납니다.',
         action: (sim) => {
-          sim.forceFormStars(80, 7.0, 3);
+          sim.forceFormStars(140, 7.0, 3);
         },
       },
     ],

@@ -1,6 +1,16 @@
 import { BarnesHut } from './BarnesHut';
 import { SpatialGrid } from './SpatialGrid';
 import { K_BOLTZMANN_REDUCED, SPECIES, Species, T_REDUCED_TO_KELVIN } from './types';
+import { checkNebulaFormation, updateNebulae } from './nebulae';
+import {
+  checkStarFormation,
+  checkStellarLifetimes,
+  forceFormStars,
+  seedGalaxies,
+  SeedGalaxiesOpts,
+  spinUpRecentStars,
+} from './starFormation';
+import { applyEffectors, integrateEffectors } from './effectors';
 
 export interface SimulatorOptions {
   boxHalf: number;
@@ -42,7 +52,7 @@ export interface CosmicEvent {
   action: (sim: Simulator) => void;
 }
 
-export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer';
+export type EffectorType = 'blackhole' | 'star' | 'repulsor' | 'freezer' | 'nebula';
 
 export interface Effector {
   type: EffectorType;
@@ -97,6 +107,10 @@ export class Simulator {
   bhTheta = 0.9;
   hubbleRate = 0;
   hubbleDecay = 0;
+  // When true, Hubble flow also moves effectors outward (at half rate so
+  // bound orbits within galaxies survive). Lets dark energy disperse the
+  // central concentration of stars/BHs instead of letting BHs eat everything.
+  applyEffectorHubbleFlow = false;
   scaleFactor = 1.0;
   openBoundary = false;
   starFormationEnabled = false;
@@ -105,9 +119,11 @@ export class Simulator {
   starFormationCooldown = 0.2;
   starFormationDMMin = 0;
   starFormationDMRadius = 3.0;
-  private readonly dmSpeciesId: number = SPECIES.findIndex((s) => s.name === 'DM');
-  private starFormationTimer = 0;
-  private starsFormed = 0;
+  // Exposed for sibling modules in this folder (nebulae.ts, starFormation.ts,
+  // effectors.ts). Treat as package-internal — not intended for external use.
+  readonly dmSpeciesId: number = SPECIES.findIndex((s) => s.name === 'DM');
+  starFormationTimer = 0;
+  starsFormed = 0;
   bondingEnabled = false;
   bondStiffness = 80;
   bondFormFactor = 1.2;
@@ -119,9 +135,9 @@ export class Simulator {
   freezerDamp = 0.92;
   effectorPairG = 0.15;
   starStarGMul = 0.45;
-  starConsumeRadiusMul = 0.55;
-  bhInspiralRate = 0.6;
-  bhInspiralRange = 8;
+  starConsumeRadiusMul = 0.35;
+  bhInspiralRate = 0.12;
+  bhInspiralRange = 3;
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -130,26 +146,57 @@ export class Simulator {
   onCosmicEvent: ((event: CosmicEvent) => void) | null = null;
   onSupernova: ((position: [number, number, number], mass: number) => void) | null = null;
   onStellarMerger: ((position: [number, number, number], totalMass: number) => void) | null = null;
+  onNebulaFormation: ((position: [number, number, number], mass: number) => void) | null = null;
   supernovaMassThreshold = 60;
+  // Direct merger → BH requires much higher mass than natal SN threshold.
+  // Two ~60M⊙ stars merging shouldn't instant-collapse; in real astrophysics
+  // such a remnant lives as a luminous blue variant before SN. This decouples
+  // the merger pathway from the single-star death pathway.
+  mergerSupernovaThreshold = 200;
+  // Natal cocoon: newly-born stars don't merge with each other for this many
+  // sim sec. Prevents same-frame multi-star spawn → instant BH cascade.
+  stellarMergerCooldown = 1.5;
   supernovaFullDisruptionProb = 0.25;
   supernovaEjectaSpeed = 3.5;
   supernovaEjectaCountFactor = 0.18;
-  // Stellar lifetime (in sim time units). Massive stars die fast and collapse.
-  // lifetime(m) = base · (refMass / m)^exp  — Salpeter-ish scaling
-  stellarLifetimeBase = 35;
-  stellarLifetimeRefMass = 50;
-  stellarLifetimeExp = 1.6;
+  // Stellar lifetime (in sim time units). τ = base · (refMass / mass)^exp.
+  // Tuned for the compressed sim scale: a "sun-like" 30 M-unit star lives
+  // ~70 sim sec (≈ most of the run); 60 M (SN limit) ~25 sim sec; 150 M
+  // (pair-instability) ~6 sim sec; 250 M (direct collapse) ~2 sim sec.
+  // Capped to prevent immortal stars or instant disappearance.
+  stellarLifetimeBase = 70;
+  stellarLifetimeRefMass = 30;
+  stellarLifetimeExp = 1.5;
+  stellarLifetimeMin = 1.5;
+  stellarLifetimeMax = 500;
   maxParticleSpeed = 10;
   maxEffectorSpeed = 18;
+  // Nebulae: detect dense gas clusters and promote them to compact objects
+  // for distinct rendering. Does NOT consume particles — gas continues to
+  // flow; nebula tracks its centroid and dissolves when the gas thins out.
+  nebulaFormationEnabled = true;
+  nebulaFormationCooldown = 0.3;
+  nebulaRadius = 7;
+  nebulaMassMin = 5;
+  nebulaDissolveMassMin = 2;
+  maxNebulae = 24;
+  // Below this mass an active nebula's gas is "protected" from continuous
+  // star formation so it can grow into a giant molecular cloud first. Once a
+  // nebula matures past the threshold, SF proceeds normally inside it.
+  nebulaMaturityMass = 90;
+  nebulaRadiusCap = 35;
+  nebulaRadiusCoeff = 1.8;
+  nebulaFormationTimer = 0;
+  nebulaCounter = 0;
 
   cosmicEvents: CosmicEvent[] = [];
   firedEvents: { event: CosmicEvent; firedAt: number }[] = [];
   private firedEventCount = 0;
-  private starCounter = 0;
-  private bhCounter = 0;
+  starCounter = 0;
+  bhCounter = 0;
 
   private grid: SpatialGrid;
-  private bh: BarnesHut;
+  bh: BarnesHut;
   private massCache: Float64Array;
   private bhAccel: [number, number, number] = [0, 0, 0];
   private potentialEnergy = 0;
@@ -158,7 +205,7 @@ export class Simulator {
   private fusionEvents = 0;
   private readonly fusionQueue: number[] = [];
   private readonly fusedMark: Uint8Array;
-  private simTime = 0;
+  simTime = 0;
 
   private readonly bondI: Int32Array;
   private readonly bondJ: Int32Array;
@@ -226,6 +273,8 @@ export class Simulator {
     this.effectors.length = 0;
     this.starsFormed = 0;
     this.starFormationTimer = 0;
+    this.nebulaFormationTimer = 0;
+    this.nebulaCounter = 0;
     this.scaleFactor = 1.0;
     this.firedEventCount = 0;
     this.firedEvents = [];
@@ -321,198 +370,16 @@ export class Simulator {
     for (let i = 0; i < this.count * 3; i++) this.velocities[i] *= factor;
   }
 
-  seedGalaxies(opts: {
-    galaxyCount: number;
-    starsPerGalaxy: number;
-    radius: number;
-    starClusterSize: number;
-    orbitalSpeed: number;
-    centralBHMass?: number;
-    centralBHRadius?: number;
-  }): { galaxies: number; stars: number; blackHoles: number } {
-    let galaxiesFormed = 0;
-    let totalStars = 0;
-    let totalBHs = 0;
-    const usedCenters: [number, number, number][] = [];
-    const minSeparation2 = (opts.radius * 3.5) * (opts.radius * 3.5);
-    const R2 = opts.radius * opts.radius;
-    const groupSize = Math.max(2, opts.starClusterSize);
-    const maxAttempts = opts.galaxyCount * 4;
-    const wantBH = !!opts.centralBHMass && opts.centralBHMass > 0;
-    const bhRadius = opts.centralBHRadius ?? 0.35;
-    const minStarR = bhRadius * 4;
-    const minStarR2 = minStarR * minStarR;
-    let attempts = 0;
-    while (galaxiesFormed < opts.galaxyCount && attempts < maxAttempts) {
-      attempts++;
-      const seed = this.findDensestHSeed(opts.radius, usedCenters, minSeparation2);
-      if (seed === -1) break;
-      const sx = this.positions[seed * 3 + 0];
-      const sy = this.positions[seed * 3 + 1];
-      const sz = this.positions[seed * 3 + 2];
-
-      const pool: number[] = [];
-      for (let j = 0; j < this.count; j++) {
-        if (this.species[j] !== 0) continue;
-        const dx = this.positions[j * 3 + 0] - sx;
-        const dy = this.positions[j * 3 + 1] - sy;
-        const dz = this.positions[j * 3 + 2] - sz;
-        if (dx * dx + dy * dy + dz * dz < R2) pool.push(j);
-      }
-      if (pool.length < groupSize) {
-        usedCenters.push([sx, sy, sz]);
-        continue;
-      }
-
-      // Galaxy COM (more accurate than seed position alone)
-      let cx = 0, cy = 0, cz = 0, cvx = 0, cvy = 0, cvz = 0, comM = 0;
-      for (const idx of pool) {
-        const m = SPECIES[this.species[idx]].mass;
-        cx += this.positions[idx * 3 + 0] * m;
-        cy += this.positions[idx * 3 + 1] * m;
-        cz += this.positions[idx * 3 + 2] * m;
-        cvx += this.velocities[idx * 3 + 0] * m;
-        cvy += this.velocities[idx * 3 + 1] * m;
-        cvz += this.velocities[idx * 3 + 2] * m;
-        comM += m;
-      }
-      if (comM <= 0) { usedCenters.push([sx, sy, sz]); continue; }
-      cx /= comM; cy /= comM; cz /= comM;
-      cvx /= comM; cvy /= comM; cvz /= comM;
-
-      // Split pool: inner H absorbed into BH, outer H forms star halo
-      const coreIndices: number[] = [];
-      const haloIndices: number[] = [];
-      if (wantBH) {
-        for (const idx of pool) {
-          const dx = this.positions[idx * 3 + 0] - cx;
-          const dy = this.positions[idx * 3 + 1] - cy;
-          const dz = this.positions[idx * 3 + 2] - cz;
-          if (dx * dx + dy * dy + dz * dz < minStarR2) coreIndices.push(idx);
-          else haloIndices.push(idx);
-        }
-      } else {
-        for (const idx of pool) haloIndices.push(idx);
-      }
-
-      haloIndices.sort((a, b) => {
-        const ax = this.positions[a * 3 + 0] - cx;
-        const ay = this.positions[a * 3 + 1] - cy;
-        const az = this.positions[a * 3 + 2] - cz;
-        const bx = this.positions[b * 3 + 0] - cx;
-        const by = this.positions[b * 3 + 1] - cy;
-        const bz = this.positions[b * 3 + 2] - cz;
-        return (ax * ax + ay * ay + az * az) - (bx * bx + by * by + bz * bz);
-      });
-
-      const toRemove: number[] = [];
-      let bh: Effector | null = null;
-      if (wantBH) {
-        let absorbedMass = 0;
-        for (const idx of coreIndices) {
-          absorbedMass += SPECIES[this.species[idx]].mass;
-          toRemove.push(idx);
-        }
-        bh = this.addEffector('blackhole', cx, cy, cz);
-        bh.strength = (opts.centralBHMass ?? 0) + absorbedMass * 5;
-        bh.radius = bhRadius;
-        bh.vx = cvx;
-        bh.vy = cvy;
-        bh.vz = cvz;
-        totalBHs++;
-      }
-
-      const haloMaxStars = Math.min(opts.starsPerGalaxy, Math.floor(haloIndices.length / groupSize));
-      const newStars: Effector[] = [];
-      for (let k = 0; k < haloMaxStars; k++) {
-        const slice = haloIndices.slice(k * groupSize, (k + 1) * groupSize);
-        const star = this.spawnStarFromCluster(slice);
-        if (star) {
-          newStars.push(star);
-          for (const idx of slice) toRemove.push(idx);
-        }
-      }
-
-      // No manual velocity setup — stars inherit the bulk velocity of the gas
-      // they formed from (via spawnStarFromCluster). With rotating initial
-      // clumps, that gas already carries angular momentum, so the stars
-      // naturally orbit the DM halo gravity well via the integrator.
-
-      toRemove.sort((a, b) => b - a);
-      for (const idx of toRemove) if (idx < this.count) this.removeParticle(idx);
-
-      galaxiesFormed++;
-      totalStars += newStars.length;
-      usedCenters.push([cx, cy, cz]);
-    }
-    return { galaxies: galaxiesFormed, stars: totalStars, blackHoles: totalBHs };
-  }
-
-  private findDensestHSeed(radius: number, excludeCenters: [number, number, number][], minSep2: number): number {
-    const R2 = radius * radius;
-    let bestIdx = -1;
-    let bestCount = -1;
-    for (let i = 0; i < this.count; i++) {
-      if (this.species[i] !== 0) continue;
-      const xi = this.positions[i * 3 + 0];
-      const yi = this.positions[i * 3 + 1];
-      const zi = this.positions[i * 3 + 2];
-      let tooClose = false;
-      for (const c of excludeCenters) {
-        const dx = xi - c[0];
-        const dy = yi - c[1];
-        const dz = zi - c[2];
-        if (dx * dx + dy * dy + dz * dz < minSep2) { tooClose = true; break; }
-      }
-      if (tooClose) continue;
-      let cnt = 0;
-      for (let j = 0; j < this.count; j++) {
-        if (j === i || this.species[j] !== 0) continue;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        if (dx * dx + dy * dy + dz * dz < R2) cnt++;
-      }
-      if (cnt > bestCount) {
-        bestCount = cnt;
-        bestIdx = i;
-      }
-    }
-    return bestIdx;
+  seedGalaxies(opts: SeedGalaxiesOpts): { galaxies: number; stars: number; blackHoles: number } {
+    return seedGalaxies(this, opts);
   }
 
   spinUpRecentStars(orbitalSpeed: number, withinSimTime: number): number {
-    const cutoff = this.simTime - withinSimTime;
-    const recent: Effector[] = [];
-    for (const e of this.effectors) if (e.type === 'star' && e.bornAt >= cutoff) recent.push(e);
-    if (recent.length < 2) return 0;
-    let cx = 0, cy = 0, cz = 0, totM = 0;
-    for (const s of recent) {
-      cx += s.x * s.strength;
-      cy += s.y * s.strength;
-      cz += s.z * s.strength;
-      totM += s.strength;
-    }
-    if (totM <= 0) return 0;
-    cx /= totM; cy /= totM; cz /= totM;
-    const axisX = 0;
-    const axisY = 1;
-    const axisZ = 0;
-    for (const s of recent) {
-      const rx = s.x - cx;
-      const ry = s.y - cy;
-      const rz = s.z - cz;
-      const tx = axisY * rz - axisZ * ry;
-      const ty = axisZ * rx - axisX * rz;
-      const tz = axisX * ry - axisY * rx;
-      const len = Math.hypot(tx, ty, tz);
-      if (len < 1e-3) continue;
-      const k = orbitalSpeed / len;
-      s.vx += tx * k;
-      s.vy += ty * k;
-      s.vz += tz * k;
-    }
-    return recent.length;
+    return spinUpRecentStars(this, orbitalSpeed, withinSimTime);
+  }
+
+  forceFormStars(maxStars: number, radius: number, minClusterSize: number): number {
+    return forceFormStars(this, maxStars, radius, minClusterSize);
   }
 
   private removeCenterOfMassMotion(): void {
@@ -567,7 +434,7 @@ export class Simulator {
     else this.applyPeriodicBoundary();
     this.clampParticleSpeeds();
     this.applyThermostat(dt);
-    this.integrateEffectors(dt);
+    integrateEffectors(this, dt);
     this.clampEffectorSpeeds();
 
     if (this.hubbleRate > 0) this.applyHubble(dt);
@@ -577,11 +444,20 @@ export class Simulator {
       this.starFormationTimer += dt;
       if (this.starFormationTimer >= this.starFormationCooldown) {
         this.starFormationTimer = 0;
-        this.checkStarFormation();
+        checkStarFormation(this);
       }
     }
 
-    this.checkStellarLifetimes();
+    if (this.nebulaFormationEnabled) {
+      this.nebulaFormationTimer += dt;
+      if (this.nebulaFormationTimer >= this.nebulaFormationCooldown) {
+        this.nebulaFormationTimer = 0;
+        checkNebulaFormation(this);
+      }
+      updateNebulae(this);
+    }
+
+    checkStellarLifetimes(this);
 
     this.simTime += dt;
 
@@ -609,90 +485,24 @@ export class Simulator {
       this.velocities[i * 3 + 1] *= drag;
       this.velocities[i * 3 + 2] *= drag;
     }
-    // Effectors are gravitationally bound systems — decouple from Hubble flow
-    // so orbital radii don't expand while velocities stay the same.
+    // Effectors are normally decoupled from Hubble flow (gravitationally bound
+    // systems shouldn't expand internally). But when applyEffectorHubbleFlow
+    // is on (e.g., during the dark-energy era), apply a *half-rate* scaling so
+    // intergalactic distances grow while tight orbits mostly survive.
+    if (this.applyEffectorHubbleFlow && this.effectors.length > 0) {
+      const efactor = 1 + (H * 0.5) * dt;
+      for (const e of this.effectors) {
+        e.x *= efactor;
+        e.y *= efactor;
+        e.z *= efactor;
+      }
+    }
   }
 
   currentHubble(): number {
     if (this.hubbleRate <= 0) return 0;
     if (this.hubbleDecay <= 0) return this.hubbleRate;
     return this.hubbleRate / (1 + this.hubbleDecay * this.simTime);
-  }
-
-  private countDMNear(x: number, y: number, z: number, r2: number): number {
-    const dmId = this.dmSpeciesId;
-    if (dmId < 0) return 0;
-    let cnt = 0;
-    for (let i = 0; i < this.count; i++) {
-      if (this.species[i] !== dmId) continue;
-      const dx = this.positions[i * 3 + 0] - x;
-      const dy = this.positions[i * 3 + 1] - y;
-      const dz = this.positions[i * 3 + 2] - z;
-      if (dx * dx + dy * dy + dz * dz < r2) cnt++;
-    }
-    return cnt;
-  }
-
-  private checkStarFormation(): void {
-    const R = this.starFormationRadius;
-    const R2 = R * R;
-    const threshold = this.starFormationCount;
-    const targetSize = Math.max(threshold, Math.min(threshold + 2, 8));
-    const claimed = new Uint8Array(this.count);
-    const removed: number[] = [];
-
-    const candidateSeeds: { idx: number; sp: number; score: number }[] = [];
-    for (let i = 0; i < this.count; i++) {
-      const si = this.species[i];
-      if (si !== 0 && si !== 4) continue;
-      const xi = this.positions[i * 3 + 0];
-      const yi = this.positions[i * 3 + 1];
-      const zi = this.positions[i * 3 + 2];
-      let cnt = 0;
-      for (let j = 0; j < this.count; j++) {
-        if (j === i || this.species[j] !== si) continue;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        if (dx * dx + dy * dy + dz * dz < R2) cnt++;
-      }
-      if (cnt + 1 >= threshold) candidateSeeds.push({ idx: i, sp: si, score: cnt });
-    }
-    candidateSeeds.sort((a, b) => b.score - a.score);
-
-    const requireDM = this.starFormationDMMin > 0;
-    const dmR2 = this.starFormationDMRadius * this.starFormationDMRadius;
-    for (const seed of candidateSeeds) {
-      if (claimed[seed.idx]) continue;
-      const xi = this.positions[seed.idx * 3 + 0];
-      const yi = this.positions[seed.idx * 3 + 1];
-      const zi = this.positions[seed.idx * 3 + 2];
-      if (requireDM) {
-        if (this.countDMNear(xi, yi, zi, dmR2) < this.starFormationDMMin) continue;
-      }
-      const nearby: { idx: number; d2: number }[] = [];
-      for (let j = 0; j < this.count; j++) {
-        if (j === seed.idx || claimed[j]) continue;
-        if (this.species[j] !== seed.sp) continue;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < R2) nearby.push({ idx: j, d2 });
-      }
-      if (nearby.length + 1 < threshold) continue;
-      nearby.sort((a, b) => a.d2 - b.d2);
-      const take = Math.min(nearby.length, targetSize - 1);
-      const cluster = [seed.idx];
-      for (let k = 0; k < take; k++) cluster.push(nearby[k].idx);
-      for (const idx of cluster) claimed[idx] = 1;
-      this.spawnStarFromCluster(cluster);
-      for (const idx of cluster) removed.push(idx);
-    }
-
-    if (removed.length === 0) return;
-    removed.sort((a, b) => b - a);
-    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
   }
 
   bbnConvert(fraction: number): { pairs: number; helium: number } {
@@ -729,463 +539,6 @@ export class Simulator {
     removed.sort((x, y) => y - x);
     for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
     return { pairs: pairCount / 2, helium: pairCount / 2 };
-  }
-
-  forceFormStars(maxStars: number, radius: number, minClusterSize: number): number {
-    let formed = this.scanAndFormStars(maxStars, radius, minClusterSize);
-    if (formed > 0) return formed;
-    formed = this.scanAndFormStars(maxStars, radius * 1.6, Math.max(3, Math.floor(minClusterSize / 2)));
-    if (formed > 0) return formed;
-    return this.fallbackFormStars(maxStars);
-  }
-
-  private scanAndFormStars(maxStars: number, radius: number, minClusterSize: number): number {
-    const r2 = radius * radius;
-    const targetSize = Math.max(minClusterSize, Math.min(minClusterSize + 2, 8));
-    const hIndices: number[] = [];
-    for (let i = 0; i < this.count; i++) if (this.species[i] === 0) hIndices.push(i);
-    if (hIndices.length < minClusterSize) return 0;
-
-    const score = new Int32Array(this.count);
-    for (const i of hIndices) {
-      const xi = this.positions[i * 3 + 0];
-      const yi = this.positions[i * 3 + 1];
-      const zi = this.positions[i * 3 + 2];
-      let s = 0;
-      for (const j of hIndices) {
-        if (j === i) continue;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        if (dx * dx + dy * dy + dz * dz < r2) s++;
-      }
-      score[i] = s;
-    }
-    hIndices.sort((a, b) => score[b] - score[a]);
-
-    const claimed = new Uint8Array(this.count);
-    const removed: number[] = [];
-    let formed = 0;
-    const requireDM = this.starFormationDMMin > 0;
-    const dmR2 = this.starFormationDMRadius * this.starFormationDMRadius;
-    for (const seed of hIndices) {
-      if (formed >= maxStars) break;
-      if (claimed[seed]) continue;
-      const xi = this.positions[seed * 3 + 0];
-      const yi = this.positions[seed * 3 + 1];
-      const zi = this.positions[seed * 3 + 2];
-      if (requireDM) {
-        if (this.countDMNear(xi, yi, zi, dmR2) < this.starFormationDMMin) continue;
-      }
-      const nearby: { idx: number; d2: number }[] = [];
-      for (const j of hIndices) {
-        if (j === seed || claimed[j]) continue;
-        const dx = this.positions[j * 3 + 0] - xi;
-        const dy = this.positions[j * 3 + 1] - yi;
-        const dz = this.positions[j * 3 + 2] - zi;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < r2) nearby.push({ idx: j, d2 });
-      }
-      if (nearby.length + 1 < minClusterSize) continue;
-      nearby.sort((a, b) => a.d2 - b.d2);
-      const take = Math.min(nearby.length, targetSize - 1);
-      const members = [seed];
-      for (let k = 0; k < take; k++) members.push(nearby[k].idx);
-      for (const idx of members) claimed[idx] = 1;
-      this.spawnStarFromCluster(members);
-      for (const idx of members) removed.push(idx);
-      formed++;
-    }
-    removed.sort((a, b) => b - a);
-    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
-    return formed;
-  }
-
-  private fallbackFormStars(maxStars: number): number {
-    const hIndices: number[] = [];
-    for (let i = 0; i < this.count; i++) if (this.species[i] === 0) hIndices.push(i);
-    if (hIndices.length < 2) return 0;
-    for (let i = hIndices.length - 1; i > 0; i--) {
-      const j = (Math.random() * (i + 1)) | 0;
-      const tmp = hIndices[i]; hIndices[i] = hIndices[j]; hIndices[j] = tmp;
-    }
-    const wanted = Math.min(maxStars, Math.floor(hIndices.length / 4));
-    if (wanted < 1) return 0;
-    const groupSize = Math.max(3, Math.floor(hIndices.length / wanted));
-    const candidates: { members: number[] }[] = [];
-    for (let k = 0; k < wanted; k++) {
-      const members = hIndices.slice(k * groupSize, (k + 1) * groupSize);
-      if (members.length >= 2) candidates.push({ members });
-    }
-    return this.consumeClustersIntoStars(candidates, maxStars);
-  }
-
-  private consumeClustersIntoStars(candidates: { members: number[] }[], maxStars: number): number {
-    candidates.sort((a, b) => b.members.length - a.members.length);
-    const claimed = new Uint8Array(this.count);
-    const removed: number[] = [];
-    let formed = 0;
-    for (const cand of candidates) {
-      if (formed >= maxStars) break;
-      let overlap = false;
-      for (const idx of cand.members) if (claimed[idx]) { overlap = true; break; }
-      if (overlap) continue;
-      for (const idx of cand.members) claimed[idx] = 1;
-      this.spawnStarFromCluster(cand.members);
-      for (const idx of cand.members) removed.push(idx);
-      formed++;
-    }
-    removed.sort((a, b) => b - a);
-    for (const idx of removed) if (idx < this.count) this.removeParticle(idx);
-    return formed;
-  }
-
-  private spawnStarFromCluster(indices: number[]): Effector | null {
-    let cx = 0;
-    let cy = 0;
-    let cz = 0;
-    let vx = 0;
-    let vy = 0;
-    let vz = 0;
-    let total = 0;
-    for (const i of indices) {
-      const m = SPECIES[this.species[i]].mass;
-      cx += this.positions[i * 3 + 0] * m;
-      cy += this.positions[i * 3 + 1] * m;
-      cz += this.positions[i * 3 + 2] * m;
-      vx += this.velocities[i * 3 + 0] * m;
-      vy += this.velocities[i * 3 + 1] * m;
-      vz += this.velocities[i * 3 + 2] * m;
-      total += m;
-    }
-    if (total <= 0) return null;
-    cx /= total;
-    cy /= total;
-    cz /= total;
-    vx /= total;
-    vy /= total;
-    vz /= total;
-
-    const eff = this.addEffector('star', cx, cy, cz);
-    // Inherit the full bulk velocity of the gas cluster (preserves angular
-    // momentum of the collapsing gas → star naturally orbits whatever the
-    // gas was orbiting, no manual setup needed).
-    eff.vx = vx;
-    eff.vy = vy;
-    eff.vz = vz;
-    eff.strength = Math.min(200, total * 55);
-    eff.radius = Math.min(3.0, Math.max(0.8, Math.cbrt(total) * 0.7));
-    this.starsFormed++;
-    this.onStarFormation?.([cx, cy, cz], indices.length);
-    return eff;
-  }
-
-  private integrateEffectors(dt: number): void {
-    const list = this.effectors;
-    if (list.length === 0) return;
-    const G = this.effectorPairG;
-    const eps2 = 1.5;
-
-    const ax = new Float64Array(list.length);
-    const ay = new Float64Array(list.length);
-    const az = new Float64Array(list.length);
-
-    const starStarMul = this.starStarGMul;
-    for (let i = 0; i < list.length; i++) {
-      const a = list[i];
-      if (!this.isMassive(a)) continue;
-      for (let j = i + 1; j < list.length; j++) {
-        const b = list[j];
-        if (!this.isMassive(b)) continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dz = b.z - a.z;
-        const r2 = dx * dx + dy * dy + dz * dz + eps2;
-        const invR = 1 / Math.sqrt(r2);
-        let mul = 1;
-        if (a.type === 'star' && b.type === 'star') mul = starStarMul;
-        const base = G * invR * invR * invR * mul;
-        const fa = base * b.strength;
-        const fb = base * a.strength;
-        ax[i] += fa * dx;
-        ay[i] += fa * dy;
-        az[i] += fa * dz;
-        ax[j] -= fb * dx;
-        ay[j] -= fb * dy;
-        az[j] -= fb * dz;
-      }
-    }
-
-    // Effectors also feel the smooth gravitational field of particles (DM/gas)
-    // via the BarnesHut tree built in applySelfGravity. Without this stars
-    // don't feel DM halos and never settle into stable galactic orbits.
-    if (this.selfGravity !== 0 && this.count > 0) {
-      const Gself = this.selfGravity;
-      const accel: [number, number, number] = [0, 0, 0];
-      for (let i = 0; i < list.length; i++) {
-        const e = list[i];
-        if (!this.isMassive(e)) continue;
-        this.bh.computeAcceleration(e.x, e.y, e.z, -1, Gself, accel);
-        ax[i] += accel[0];
-        ay[i] += accel[1];
-        az[i] += accel[2];
-      }
-    }
-
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i];
-      if (!this.isMassive(e)) continue;
-      e.vx += ax[i] * dt;
-      e.vy += ay[i] * dt;
-      e.vz += az[i] * dt;
-      e.x += e.vx * dt;
-      e.y += e.vy * dt;
-      e.z += e.vz * dt;
-    }
-
-    if (this.bhInspiralRate > 0) this.applyBHInspiral(dt);
-    this.handleEffectorCollisions();
-  }
-
-  private applyBHInspiral(dt: number): void {
-    const list = this.effectors;
-    const range2 = this.bhInspiralRange * this.bhInspiralRange;
-    const rate = this.bhInspiralRate;
-    for (let i = 0; i < list.length; i++) {
-      const a = list[i];
-      if (a.type !== 'blackhole') continue;
-      for (let j = i + 1; j < list.length; j++) {
-        const b = list[j];
-        if (b.type !== 'blackhole') continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dz = b.z - a.z;
-        const r2 = dx * dx + dy * dy + dz * dz;
-        if (r2 > range2 || r2 < 1e-3) continue;
-        // GW-like drag: damp relative motion, stronger when close
-        const dvx = b.vx - a.vx;
-        const dvy = b.vy - a.vy;
-        const dvz = b.vz - a.vz;
-        const drag = rate * dt / (r2 + 1);
-        a.vx += dvx * drag;
-        a.vy += dvy * drag;
-        a.vz += dvz * drag;
-        b.vx -= dvx * drag;
-        b.vy -= dvy * drag;
-        b.vz -= dvz * drag;
-      }
-    }
-  }
-
-  private handleEffectorCollisions(): void {
-    const removed = new Set<Effector>();
-    const list = this.effectors;
-    for (let i = 0; i < list.length; i++) {
-      const a = list[i];
-      if (removed.has(a) || !this.isMassive(a)) continue;
-      for (let j = i + 1; j < list.length; j++) {
-        const b = list[j];
-        if (removed.has(b) || !this.isMassive(b)) continue;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dz = b.z - a.z;
-        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-        if (a.type === 'blackhole' && b.type === 'blackhole') {
-          if (r < a.radius + b.radius) {
-            this.mergeBlackHoles(a, b);
-            removed.add(b);
-          }
-        } else if (a.type === 'blackhole' && b.type === 'star') {
-          if (r < a.radius * this.starConsumeRadiusMul) {
-            this.consumeStar(a, b);
-            removed.add(b);
-          }
-        } else if (a.type === 'star' && b.type === 'blackhole') {
-          if (r < b.radius * this.starConsumeRadiusMul) {
-            this.consumeStar(b, a);
-            removed.add(a);
-            break;
-          }
-        } else if (a.type === 'star' && b.type === 'star') {
-          if (r < (a.radius + b.radius) * 0.9) {
-            const collapsed = this.mergeStars(a, b);
-            removed.add(b);
-            if (collapsed) removed.add(a);
-          }
-        }
-      }
-    }
-    if (removed.size === 0) return;
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (removed.has(list[i])) {
-        const e = list[i];
-        list.splice(i, 1);
-        this.onEffectorRemoved?.(e, e.type === 'star' ? 'consumed' : 'merged');
-      }
-    }
-  }
-
-
-  private mergeBlackHoles(a: Effector, b: Effector): void {
-    const ma = a.strength;
-    const mb = b.strength;
-    const total = ma + mb;
-    a.x = (a.x * ma + b.x * mb) / total;
-    a.y = (a.y * ma + b.y * mb) / total;
-    a.z = (a.z * ma + b.z * mb) / total;
-    a.vx = (a.vx * ma + b.vx * mb) / total;
-    a.vy = (a.vy * ma + b.vy * mb) / total;
-    a.vz = (a.vz * ma + b.vz * mb) / total;
-    a.strength = total;
-    a.radius = Math.min(2.0, Math.cbrt(a.radius ** 3 + b.radius ** 3));
-    a.consumed += b.consumed;
-  }
-
-  private checkStellarLifetimes(): void {
-    if (this.stellarLifetimeBase <= 0) return;
-    const refM = this.stellarLifetimeRefMass;
-    const exp = this.stellarLifetimeExp;
-    const base = this.stellarLifetimeBase;
-    const dying: Effector[] = [];
-    for (const e of this.effectors) {
-      if (e.type !== 'star') continue;
-      const age = this.simTime - e.bornAt;
-      const lifetime = base * Math.pow(refM / Math.max(e.strength, 1e-3), exp);
-      if (age > lifetime) dying.push(e);
-    }
-    if (dying.length === 0) return;
-    for (const star of dying) {
-      this.endOfStarLife(star);
-    }
-  }
-
-  private endOfStarLife(star: Effector): void {
-    const idx = this.effectors.indexOf(star);
-    if (idx < 0) return;
-    const massive = star.strength >= this.supernovaMassThreshold;
-    if (massive) {
-      // Core-collapse supernova path: eject metals + BH remnant (or full disruption)
-      const fullDisruption = Math.random() < this.supernovaFullDisruptionProb;
-      const ejectaFraction = fullDisruption ? 0.95 : 0.45;
-      this.ejectSupernovaParticles(star.x, star.y, star.z, star.vx, star.vy, star.vz, star.strength * ejectaFraction);
-      if (!fullDisruption) {
-        const bh = this.addEffector('blackhole', star.x, star.y, star.z);
-        bh.vx = star.vx; bh.vy = star.vy; bh.vz = star.vz;
-        bh.strength = star.strength * (1 - ejectaFraction);
-        bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
-      }
-      this.onSupernova?.([star.x, star.y, star.z], star.strength);
-    } else {
-      // Low-mass quiet death: eject most of its envelope as gas, no remnant tracked
-      this.ejectSupernovaParticles(star.x, star.y, star.z, star.vx, star.vy, star.vz, star.strength * 0.6);
-    }
-    this.effectors.splice(idx, 1);
-    this.onEffectorRemoved?.(star, 'consumed');
-  }
-
-  private mergeStars(a: Effector, b: Effector): boolean {
-    const ma = a.strength;
-    const mb = b.strength;
-    const total = ma + mb;
-    const mx = (a.x * ma + b.x * mb) / total;
-    const my = (a.y * ma + b.y * mb) / total;
-    const mz = (a.z * ma + b.z * mb) / total;
-    const vx = (a.vx * ma + b.vx * mb) / total;
-    const vy = (a.vy * ma + b.vy * mb) / total;
-    const vz = (a.vz * ma + b.vz * mb) / total;
-
-    if (total > this.supernovaMassThreshold) {
-      const fullDisruption = Math.random() < this.supernovaFullDisruptionProb;
-      const ejectaFraction = fullDisruption ? 0.95 : 0.45;
-      this.ejectSupernovaParticles(mx, my, mz, vx, vy, vz, total * ejectaFraction);
-      if (!fullDisruption) {
-        const bh = this.addEffector('blackhole', mx, my, mz);
-        bh.vx = vx;
-        bh.vy = vy;
-        bh.vz = vz;
-        bh.strength = total * (1 - ejectaFraction);
-        bh.radius = Math.max(0.6, Math.cbrt(bh.strength) * 0.18);
-      }
-      this.onSupernova?.([mx, my, mz], total);
-      return true;
-    }
-
-    a.x = mx;
-    a.y = my;
-    a.z = mz;
-    a.vx = vx;
-    a.vy = vy;
-    a.vz = vz;
-    a.strength = total;
-    a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
-    this.onStellarMerger?.([mx, my, mz], total);
-    return false;
-  }
-
-  private ejectSupernovaParticles(x: number, y: number, z: number, vx: number, vy: number, vz: number, ejectaMass: number): void {
-    const find = (name: string) => SPECIES.findIndex((s) => s.name === name);
-    const heId = find('He');
-    const n2Id = find('N₂');
-    const o2Id = find('O₂');
-    const dustId = find('Dust');
-    const cId = find('C');
-    const siId = find('Si');
-    const feId = find('Fe');
-    const auId = find('Au');
-    // Stellar nucleosynthesis abundances (alpha-process favored).
-    // He · C · O₂ most common, Si/N₂ moderate, Fe rarer, Au very rare (r-process).
-    const speciesPool: number[] = [];
-    if (heId >= 0) { for (let k = 0; k < 6; k++) speciesPool.push(heId); }
-    if (cId >= 0) { for (let k = 0; k < 4; k++) speciesPool.push(cId); }
-    if (o2Id >= 0) { for (let k = 0; k < 4; k++) speciesPool.push(o2Id); }
-    if (siId >= 0) { for (let k = 0; k < 2; k++) speciesPool.push(siId); }
-    if (n2Id >= 0) { for (let k = 0; k < 2; k++) speciesPool.push(n2Id); }
-    if (feId >= 0) { speciesPool.push(feId); }
-    if (dustId >= 0) { speciesPool.push(dustId); }
-    // Au only seeded with low probability per supernova
-    const sprinkleGold = auId >= 0 && Math.random() < 0.18;
-    if (speciesPool.length === 0) return;
-
-    const count = Math.max(4, Math.min(40, Math.floor(ejectaMass * this.supernovaEjectaCountFactor)));
-    const baseSpeed = this.supernovaEjectaSpeed;
-    for (let k = 0; k < count; k++) {
-      if (this.count >= this.maxParticles) return;
-      const u = Math.random() * 2 - 1;
-      const t = Math.random() * Math.PI * 2;
-      const s = Math.sqrt(Math.max(0, 1 - u * u));
-      const dx = s * Math.cos(t);
-      const dy = u;
-      const dz = s * Math.sin(t);
-      let sp = speciesPool[(Math.random() * speciesPool.length) | 0];
-      // Sprinkle a single Au atom into ~18% of supernovae as a special trace
-      if (sprinkleGold && auId >= 0 && k === 0) sp = auId;
-      const r0 = 0.6 + Math.random() * 0.3;
-      const speed = baseSpeed * (0.7 + Math.random() * 0.6);
-      const i = this.count++;
-      this.species[i] = sp;
-      this.positions[i * 3 + 0] = x + dx * r0;
-      this.positions[i * 3 + 1] = y + dy * r0;
-      this.positions[i * 3 + 2] = z + dz * r0;
-      this.velocities[i * 3 + 0] = vx + dx * speed;
-      this.velocities[i * 3 + 1] = vy + dy * speed;
-      this.velocities[i * 3 + 2] = vz + dz * speed;
-    }
-  }
-
-  private consumeStar(bh: Effector, star: Effector): void {
-    const ma = bh.strength;
-    const dm = star.strength * 0.6;
-    const total = ma + dm;
-    bh.x = (bh.x * ma + star.x * dm) / total;
-    bh.y = (bh.y * ma + star.y * dm) / total;
-    bh.z = (bh.z * ma + star.z * dm) / total;
-    bh.vx = (bh.vx * ma + star.vx * dm) / total;
-    bh.vy = (bh.vy * ma + star.vy * dm) / total;
-    bh.vz = (bh.vz * ma + star.vz * dm) / total;
-    bh.strength = total;
-    bh.radius = Math.min(1.0, Math.cbrt(bh.radius ** 3 + star.radius ** 3 * 0.1));
-    bh.consumed += 1;
   }
 
   private computeForces(): void {
@@ -1271,7 +624,7 @@ export class Simulator {
 
     if (fusionCheck && this.fusionQueue.length > 0) this.processFusion();
 
-    if (this.effectors.length > 0) this.applyEffectors();
+    if (this.effectors.length > 0) applyEffectors(this);
   }
 
   addEffector(type: EffectorType, x: number, y: number, z: number): Effector {
@@ -1280,6 +633,7 @@ export class Simulator {
       star:      { radius: 1.6, strength: 30 },
       repulsor:  { radius: 1.5, strength: 60 },
       freezer:   { radius: 3.0, strength: 0.92 },
+      nebula:    { radius: 8.0, strength: 0 },
     };
     const p = presets[type];
     const e: Effector = {
@@ -1290,6 +644,7 @@ export class Simulator {
     };
     if (type === 'star') e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
     else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
+    else if (type === 'nebula') e.name = `☁ N-${String(++this.nebulaCounter).padStart(3, '0')}`;
     this.effectors.push(e);
     return e;
   }
@@ -1304,118 +659,6 @@ export class Simulator {
     if (idx >= 0) {
       this.effectors.splice(idx, 1);
       this.onEffectorRemoved?.(target, 'manual');
-    }
-  }
-
-  private isMassive(e: Effector): boolean {
-    return e.type === 'blackhole' || e.type === 'star';
-  }
-
-  private applyEffectors(): void {
-    const consume = new Set<number>();
-    for (const e of this.effectors) {
-      switch (e.type) {
-        case 'blackhole': this.applyBlackHole(e, consume); break;
-        case 'star':      this.applyStar(e); break;
-        case 'repulsor':  this.applyRepulsor(e); break;
-        case 'freezer':   this.applyFreezer(e); break;
-      }
-    }
-    if (consume.size > 0) {
-      const sorted = Array.from(consume).sort((a, b) => b - a);
-      for (const idx of sorted) if (idx < this.count) this.removeParticle(idx);
-    }
-  }
-
-  private applyBlackHole(e: Effector, consume: Set<number>): void {
-    const G = this.blackHoleG;
-    const eps2 = 0.6;
-    const r2horizon = e.radius * e.radius;
-    const influence = e.radius * 2;
-    const r2influence = influence * influence;
-    const fadeStart = influence * 0.85;
-    const r2fade = fadeStart * fadeStart;
-    for (let i = 0; i < this.count; i++) {
-      const dx = e.x - this.positions[i * 3 + 0];
-      const dy = e.y - this.positions[i * 3 + 1];
-      const dz = e.z - this.positions[i * 3 + 2];
-      const r2 = dx * dx + dy * dy + dz * dz;
-      if (r2 < r2horizon) {
-        consume.add(i);
-        e.consumed++;
-        continue;
-      }
-      if (r2 > r2influence) continue;
-      let scale = 1;
-      if (r2 > r2fade) {
-        const r = Math.sqrt(r2);
-        scale = (influence - r) / (influence - fadeStart);
-      }
-      const m = SPECIES[this.species[i]].mass;
-      const invR = 1 / Math.sqrt(r2 + eps2);
-      const f = G * e.strength * m * invR * invR * invR * scale;
-      this.forces[i * 3 + 0] += f * dx;
-      this.forces[i * 3 + 1] += f * dy;
-      this.forces[i * 3 + 2] += f * dz;
-    }
-  }
-
-  private applyStar(e: Effector): void {
-    const G = this.starG;
-    const eps2 = 0.5;
-    const heatR2 = (e.radius * 3) * (e.radius * 3);
-    const heatRate = this.starHeatRate;
-    for (let i = 0; i < this.count; i++) {
-      const dx = e.x - this.positions[i * 3 + 0];
-      const dy = e.y - this.positions[i * 3 + 1];
-      const dz = e.z - this.positions[i * 3 + 2];
-      const r2 = dx * dx + dy * dy + dz * dz;
-      const m = SPECIES[this.species[i]].mass;
-      const invR = 1 / Math.sqrt(r2 + eps2);
-      const f = G * e.strength * m * invR * invR * invR;
-      this.forces[i * 3 + 0] += f * dx;
-      this.forces[i * 3 + 1] += f * dy;
-      this.forces[i * 3 + 2] += f * dz;
-      if (r2 < heatR2) {
-        const boost = 1 + heatRate * 0.01;
-        this.velocities[i * 3 + 0] *= boost;
-        this.velocities[i * 3 + 1] *= boost;
-        this.velocities[i * 3 + 2] *= boost;
-      }
-    }
-  }
-
-  private applyRepulsor(e: Effector): void {
-    const G = this.repulsorG;
-    const eps2 = 0.3;
-    const cutoff2 = (e.radius * 4) * (e.radius * 4);
-    for (let i = 0; i < this.count; i++) {
-      const dx = this.positions[i * 3 + 0] - e.x;
-      const dy = this.positions[i * 3 + 1] - e.y;
-      const dz = this.positions[i * 3 + 2] - e.z;
-      const r2 = dx * dx + dy * dy + dz * dz;
-      if (r2 > cutoff2) continue;
-      const m = SPECIES[this.species[i]].mass;
-      const invR = 1 / Math.sqrt(r2 + eps2);
-      const f = G * e.strength * m * invR * invR * invR;
-      this.forces[i * 3 + 0] += f * dx;
-      this.forces[i * 3 + 1] += f * dy;
-      this.forces[i * 3 + 2] += f * dz;
-    }
-  }
-
-  private applyFreezer(e: Effector): void {
-    const r2 = e.radius * e.radius;
-    const damp = e.strength;
-    for (let i = 0; i < this.count; i++) {
-      const dx = e.x - this.positions[i * 3 + 0];
-      const dy = e.y - this.positions[i * 3 + 1];
-      const dz = e.z - this.positions[i * 3 + 2];
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 > r2) continue;
-      this.velocities[i * 3 + 0] *= damp;
-      this.velocities[i * 3 + 1] *= damp;
-      this.velocities[i * 3 + 2] *= damp;
     }
   }
 
@@ -1476,7 +719,7 @@ export class Simulator {
     this.bondLen = write;
   }
 
-  private removeBondsForParticle(p: number): void {
+  removeBondsForParticle(p: number): void {
     let write = 0;
     for (let b = 0; b < this.bondLen; b++) {
       const i = this.bondI[b];
@@ -1664,7 +907,7 @@ export class Simulator {
     this.fusionQueue.length = 0;
   }
 
-  private removeParticle(idx: number): void {
+  removeParticle(idx: number): void {
     this.removeBondsForParticle(idx);
     const last = this.count - 1;
     if (idx !== last) {

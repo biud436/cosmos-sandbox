@@ -142,15 +142,20 @@ export class Controls {
     folder.add(this.sim, 'starFormationCooldown', 0.05, 2.0, 0.05).name('SF cooldown').listen();
     folder.add(this.sim, 'starFormationDMMin', 0, 40, 1).name('별 형성: 암흑물질 최소').listen();
     folder.add(this.sim, 'starFormationDMRadius', 0.5, 10, 0.1).name('별 형성: 암흑물질 헤일로 반경').listen();
+    folder.add(this.sim, 'nebulaFormationEnabled').name('성운 자동 형성').listen();
+    folder.add(this.sim, 'nebulaRadius', 3, 20, 0.5).name('성운 감지 반경').listen();
+    folder.add(this.sim, 'nebulaMassMin', 5, 200, 1).name('성운 형성 최소 질량').listen();
+    folder.add(this.sim, 'nebulaDissolveMassMin', 1, 100, 1).name('성운 해체 질량').listen();
     folder.add(this.sim, 'bhTheta', 0.1, 1.5, 0.05).name('BH θ').listen();
   }
 
   private buildVisibilityFolder(): void {
     const folder = this.gui.addFolder('시야 — 실시간');
     this.markFolder(folder, 'runtime');
-    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies'; label: string }[] = [
+    const groups: { key: 'particles' | 'bonds' | 'boundary' | 'stars' | 'blackholes' | 'repulsors' | 'freezers' | 'orbits' | 'galaxies' | 'nebulae'; label: string }[] = [
       { key: 'particles', label: '입자' },
       { key: 'bonds', label: '결합' },
+      { key: 'nebulae', label: '성운' },
       { key: 'stars', label: '별' },
       { key: 'blackholes', label: '블랙홀' },
       { key: 'galaxies', label: '은하 헤일로' },
@@ -283,6 +288,7 @@ export class Controls {
     if (preset.initialClumpRotation !== undefined) this.sim.initialClumpRotation = preset.initialClumpRotation;
     this.sim.hubbleRate = preset.hubbleRate ?? 0;
     this.sim.hubbleDecay = preset.hubbleDecay ?? 0;
+    this.sim.applyEffectorHubbleFlow = false;
     this.sim.openBoundary = preset.openBoundary ?? false;
     this.sim.starFormationEnabled = preset.starFormationEnabled ?? false;
     if (preset.starFormationRadius !== undefined) this.sim.starFormationRadius = preset.starFormationRadius;

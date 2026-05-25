@@ -32,6 +32,10 @@ sim.onStarFormation = (position, atoms) => {
   layout.log(`★ Star formed from ${atoms} atoms`, 'event');
 };
 
+sim.onNebulaFormation = (_position, mass) => {
+  layout.log(`☁ Nebula formed · M≈${mass.toFixed(0)}`, 'event');
+};
+
 sim.onCosmicEvent = (ev) => {
   layout.showEvent(ev);
   layout.log(`◆ ${ev.name} — ${ev.description}`, 'event');

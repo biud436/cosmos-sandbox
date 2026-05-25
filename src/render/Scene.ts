@@ -29,6 +29,7 @@ export class Scene {
     freezers: true,
     orbits: false,
     galaxies: true,
+    nebulae: true,
   };
   private galaxyHalos = new Map<Effector, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
   private selectedOrbitLines: THREE.LineSegments | null = null;
@@ -54,6 +55,7 @@ export class Scene {
   private selectedEffector: Effector | null = null;
   private renderMode: 'solid' | 'gas' = 'solid';
   private gasPoints: THREE.Points | null = null;
+  private gasHaloPoints: THREE.Points | null = null;
   private gasGeom: THREE.BufferGeometry | null = null;
   private gasPositions: Float32Array | null = null;
   private gasColors: Float32Array | null = null;
@@ -253,6 +255,7 @@ export class Scene {
       case 'particles':
         for (const m of this.speciesMeshes) m.visible = visible && this.renderMode === 'solid';
         if (this.gasPoints) this.gasPoints.visible = visible && this.renderMode === 'gas';
+        if (this.gasHaloPoints) this.gasHaloPoints.visible = visible && this.renderMode === 'gas';
         break;
       case 'bonds':
         if (this.bondLines) this.bondLines.visible = visible;
@@ -333,28 +336,63 @@ export class Scene {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      uniforms: { uPixelScale: { value: this.renderer.getPixelRatio() * window.innerHeight * 0.5 } },
+      uniforms: {
+        uPixelScale: { value: this.renderer.getPixelRatio() * window.innerHeight * 0.5 },
+        uRedshiftNear: { value: 80 },
+        uRedshiftFar: { value: 500 },
+      },
       vertexShader: `
         attribute float size;
         attribute vec3 color;
         varying vec3 vColor;
+        varying float vRedshift;
+        varying vec2 vSeed;
         uniform float uPixelScale;
+        uniform float uRedshiftNear;
+        uniform float uRedshiftFar;
         void main() {
-          vColor = color;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = size * (uPixelScale / max(-mv.z, 0.001));
+          float dist = -mv.z;
+          gl_PointSize = size * (uPixelScale / max(dist, 0.001));
           gl_Position = projectionMatrix * mv;
+          float z = clamp((dist - uRedshiftNear) / max(uRedshiftFar - uRedshiftNear, 0.001), 0.0, 1.0);
+          vRedshift = z;
+          // Cosmological-ish redshift: blue dims fastest, green moderate, red preserved
+          vec3 tint = vec3(1.0 - 0.10 * z, 1.0 - 0.45 * z, 1.0 - 0.80 * z);
+          vColor = color * tint;
+          // Per-particle wisp seed (derived from world position so each cloudlet differs)
+          vSeed = vec2(position.x * 0.137 + position.z * 0.091, position.y * 0.113);
         }
       `,
       fragmentShader: `
         varying vec3 vColor;
+        varying float vRedshift;
+        varying vec2 vSeed;
+        // Cheap value noise — single octave is enough; we layer two for variation.
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
         void main() {
           vec2 uv = gl_PointCoord * 2.0 - 1.0;
           float d2 = dot(uv, uv);
           if (d2 > 1.0) discard;
-          float core = exp(-d2 * 4.0);
-          float halo = exp(-d2 * 1.4) * 0.45;
-          float a = core + halo;
+          // Pure wide Gaussian — no hard core, pure blur
+          float g = exp(-d2 * 1.4);
+          // Wisp noise so each particle isn't a perfect disc: breaks the circular tell
+          float n1 = vnoise(uv * 2.6 + vSeed * 7.0);
+          float n2 = vnoise(uv * 5.8 - vSeed * 3.0);
+          float wisp = mix(0.65, 1.0, n1 * 0.65 + n2 * 0.35);
+          float a = g * wisp * 0.55 * (1.0 - 0.30 * vRedshift);
           gl_FragColor = vec4(vColor * a, a);
         }
       `,
@@ -365,8 +403,63 @@ export class Scene {
     points.visible = false;
     this.scene.add(points);
 
+    // Macro halo pass: same buffers, much larger sprite, no wisp noise.
+    // Heavy overlap of these big soft Gaussians makes nearby particles read
+    // as a single nebula cluster rather than discrete dots.
+    const haloMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uPixelScale: { value: this.renderer.getPixelRatio() * window.innerHeight * 0.5 },
+        uRedshiftNear: { value: 80 },
+        uRedshiftFar: { value: 500 },
+        uSizeMul: { value: 3.2 },
+      },
+      vertexShader: `
+        attribute float size;
+        attribute vec3 color;
+        varying vec3 vColor;
+        varying float vRedshift;
+        uniform float uPixelScale;
+        uniform float uRedshiftNear;
+        uniform float uRedshiftFar;
+        uniform float uSizeMul;
+        void main() {
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float dist = -mv.z;
+          gl_PointSize = size * uSizeMul * (uPixelScale / max(dist, 0.001));
+          gl_Position = projectionMatrix * mv;
+          float z = clamp((dist - uRedshiftNear) / max(uRedshiftFar - uRedshiftNear, 0.001), 0.0, 1.0);
+          vRedshift = z;
+          vec3 tint = vec3(1.0 - 0.10 * z, 1.0 - 0.45 * z, 1.0 - 0.80 * z);
+          vColor = color * tint;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        varying float vRedshift;
+        void main() {
+          vec2 uv = gl_PointCoord * 2.0 - 1.0;
+          float d2 = dot(uv, uv);
+          if (d2 > 1.0) discard;
+          // Very soft Gaussian — pure halo, almost no peak. Overlapping halos
+          // merge smoothly into larger nebula structure.
+          float g = exp(-d2 * 0.9);
+          float a = g * 0.085 * (1.0 - 0.35 * vRedshift);
+          gl_FragColor = vec4(vColor * a, a);
+        }
+      `,
+    });
+    const halo = new THREE.Points(geom, haloMat);
+    halo.frustumCulled = false;
+    halo.visible = false;
+    halo.renderOrder = -1; // draw behind the detail pass
+    this.scene.add(halo);
+
     this.gasGeom = geom;
     this.gasPoints = points;
+    this.gasHaloPoints = halo;
     this.gasPositions = positions;
     this.gasColors = colors;
     this.gasSizes = sizes;
@@ -463,6 +556,7 @@ export class Scene {
     const show = this.visibility.particles;
     for (const m of this.speciesMeshes) m.visible = show && useSolid;
     if (this.gasPoints) this.gasPoints.visible = show && !useSolid;
+    if (this.gasHaloPoints) this.gasHaloPoints.visible = show && !useSolid;
   }
 
   setEnvironmentVisible(visible: boolean): void {
@@ -543,11 +637,14 @@ export class Scene {
         const r = ((sp.color >> 16) & 0xff) / 255;
         const g = ((sp.color >> 8) & 0xff) / 255;
         const b = (sp.color & 0xff) / 255;
-        const dim = isDM ? 0.55 : 1.0;
+        // DM: barely visible (halo hint), baryonic gas: full intensity
+        const dim = isDM ? 0.28 : 0.85;
         this.gasColors[write * 3 + 0] = r * dim;
         this.gasColors[write * 3 + 1] = g * dim;
         this.gasColors[write * 3 + 2] = b * dim;
-        this.gasSizes[write] = sp.sigma * (isDM ? 5.8 : 4.5);
+        // Large, heavily-overlapping point sprites so additive blending forms
+        // diffuse nebulae rather than visibly distinct particles.
+        this.gasSizes[write] = sp.sigma * (isDM ? 10.0 : 18.0);
         write++;
       }
       this.gasGeom.setDrawRange(0, write);
@@ -583,6 +680,7 @@ export class Scene {
       case 'blackhole': return 'blackholes';
       case 'repulsor': return 'repulsors';
       case 'freezer': return 'freezers';
+      case 'nebula': return 'nebulae';
     }
   }
 
@@ -923,6 +1021,9 @@ export class Scene {
         this.effectorViews.delete(eff);
       }
     }
+    const camPos = this.camera.position;
+    const rsNear = 80;
+    const rsFar = 500;
     for (const eff of sim.effectors) {
       let view = this.effectorViews.get(eff);
       if (!view) {
@@ -930,7 +1031,13 @@ export class Scene {
         this.effectorViews.set(eff, view);
       }
       const typeVisible = this.visibility[this.visibilityKeyFor(eff.type)];
-      const scaleBoost = eff.type === 'star' ? 0.85 : eff.type === 'blackhole' ? 1.0 : 1.0;
+      // Stars get a larger visual halo so they read as actual stars, not just dots.
+      // Nebulae's radius already represents the cloud extent — use 0.5x so the
+      // 5x5 plane scaled by radius·0.5 covers the radius with soft falloff.
+      const scaleBoost =
+        eff.type === 'star' ? 1.25 :
+        eff.type === 'nebula' ? 0.5 :
+        1.0;
       const visualR = eff.radius * scaleBoost * 3.0;
       this.tmpSphere.center.set(eff.x, eff.y, eff.z);
       this.tmpSphere.radius = visualR;
@@ -941,6 +1048,17 @@ export class Scene {
       view.group.scale.setScalar(eff.radius * scaleBoost);
       view.group.lookAt(this.camera.position);
       view.mat.uniforms.uTime.value = this.effectorClock;
+      if (view.mat.uniforms.uRedshift) {
+        const dx = eff.x - camPos.x;
+        const dy = eff.y - camPos.y;
+        const dz = eff.z - camPos.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const z = Math.min(1, Math.max(0, (dist - rsNear) / (rsFar - rsNear)));
+        view.mat.uniforms.uRedshift.value = z;
+      }
+      if (view.mat.uniforms.uMass) {
+        view.mat.uniforms.uMass.value = eff.strength;
+      }
       const selected = eff === this.selectedEffector;
       view.selectionRing.visible = selected;
       if (selected) {
@@ -968,6 +1086,7 @@ export class Scene {
         fragmentShader = `
           varying vec2 vUv;
           uniform float uTime;
+          uniform float uRedshift;
           void main() {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
@@ -978,7 +1097,10 @@ export class Scene {
             vec3 hot = vec3(1.0, 0.85, 0.55);
             vec3 cool = vec3(1.0, 0.45, 0.15);
             vec3 col = mix(cool, hot, swirl * 0.5 + 0.5);
-            gl_FragColor = vec4(col * (1.4 + swirl * 0.4), band * (0.85 + 0.15 * swirl));
+            vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
+            col *= tint;
+            float dim = 1.0 - 0.30 * uRedshift;
+            gl_FragColor = vec4(col * (1.4 + swirl * 0.4) * dim, band * (0.85 + 0.15 * swirl));
           }
         `;
         break;
@@ -987,16 +1109,25 @@ export class Scene {
         fragmentShader = `
           varying vec2 vUv;
           uniform float uTime;
+          uniform float uRedshift;
           void main() {
             vec2 c = vUv * 2.0 - 1.0;
             float r = length(c);
             if (r > 1.0) discard;
-            float core = exp(-r * 6.5);
-            float halo = exp(-r * 1.6) * 0.18;
+            float core = exp(-r * 5.5);
+            float halo = exp(-r * 1.4) * 0.42;
+            float spike = pow(max(0.0, 1.0 - abs(c.x) * 8.0), 4.0) + pow(max(0.0, 1.0 - abs(c.y) * 8.0), 4.0);
+            spike *= exp(-r * 1.8) * 0.35;
             float twinkle = 0.92 + 0.08 * sin(uTime * 2.3);
-            float glow = (core + halo) * twinkle;
-            vec3 col = mix(vec3(1.0, 0.72, 0.4), vec3(1.0, 0.98, 0.88), core);
-            gl_FragColor = vec4(col * (0.5 + glow * 0.9), clamp(glow, 0.0, 1.0));
+            float glow = (core + halo + spike) * twinkle;
+            vec3 hotCol = vec3(1.0, 0.98, 0.88);
+            vec3 warmCol = vec3(1.0, 0.72, 0.4);
+            vec3 col = mix(warmCol, hotCol, core);
+            // Cosmological-style redshift: dim blue first, then green, preserve red
+            vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
+            col *= tint;
+            float bright = 1.0 - 0.25 * uRedshift;
+            gl_FragColor = vec4(col * (0.55 + glow * 1.05) * bright, clamp(glow, 0.0, 1.0));
           }
         `;
         break;
@@ -1031,6 +1162,57 @@ export class Scene {
             float crystal = smoothstep(1.0, 0.2, r) * spokes;
             vec3 col = vec3(0.55, 0.85, 1.0);
             gl_FragColor = vec4(col * (0.6 + crystal), crystal * 0.55);
+          }
+        `;
+        break;
+      case 'nebula':
+        coreColor = 0xff88aa;
+        coreVisible = false;
+        fragmentShader = `
+          varying vec2 vUv;
+          uniform float uTime;
+          uniform float uRedshift;
+          uniform float uMass;
+          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+          float fbm(vec2 p) {
+            float v = 0.0;
+            float a = 0.5;
+            for (int i = 0; i < 4; i++) {
+              v += vnoise(p) * a;
+              p *= 2.0;
+              a *= 0.5;
+            }
+            return v;
+          }
+          void main() {
+            vec2 c = vUv * 2.0 - 1.0;
+            float r = length(c);
+            if (r > 1.0) discard;
+            float falloff = exp(-r * r * 2.0);
+            vec2 q = vUv * 4.0 + vec2(uTime * 0.018, -uTime * 0.013);
+            float wisp = fbm(q);
+            float fine = fbm(q * 3.0) * 0.35;
+            float density = falloff * mix(0.45, 1.45, clamp(wisp + fine, 0.0, 1.0));
+            // H-alpha + ionized oxygen palette: pink core, magenta/violet halo
+            vec3 coreCol = vec3(1.0, 0.55, 0.75);
+            vec3 outerCol = vec3(0.55, 0.35, 0.85);
+            vec3 col = mix(outerCol, coreCol, clamp(density * 1.2, 0.0, 1.0));
+            vec3 tint = vec3(1.0 - 0.10 * uRedshift, 1.0 - 0.45 * uRedshift, 1.0 - 0.80 * uRedshift);
+            col *= tint;
+            float massPunch = smoothstep(8.0, 80.0, uMass);
+            float a = clamp(density * (0.55 + 0.45 * massPunch), 0.0, 0.85);
+            a *= 1.0 - 0.30 * uRedshift;
+            gl_FragColor = vec4(col * (0.65 + density * 0.9), a);
           }
         `;
         break;
@@ -1073,7 +1255,7 @@ export class Scene {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      uniforms: { uTime: { value: 0 } },
+      uniforms: { uTime: { value: 0 }, uRedshift: { value: 0 }, uMass: { value: 0 } },
       vertexShader: `
         varying vec2 vUv;
         void main() {
@@ -1231,9 +1413,12 @@ export class Scene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    const pixelScale = this.renderer.getPixelRatio() * h * 0.5;
     if (this.gasPoints) {
-      const mat = this.gasPoints.material as THREE.ShaderMaterial;
-      mat.uniforms.uPixelScale.value = this.renderer.getPixelRatio() * h * 0.5;
+      (this.gasPoints.material as THREE.ShaderMaterial).uniforms.uPixelScale.value = pixelScale;
+    }
+    if (this.gasHaloPoints) {
+      (this.gasHaloPoints.material as THREE.ShaderMaterial).uniforms.uPixelScale.value = pixelScale;
     }
   }
 }
