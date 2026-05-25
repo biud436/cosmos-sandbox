@@ -5,6 +5,13 @@
 import type { Effector, Simulator } from './Simulator';
 import { SPECIES } from './types';
 
+// R = coeff · M^exp, clamped. Sub-linear power keeps small nebulae compact
+// but lets a 200+ mass cloud genuinely puff out to ~40 units.
+function nebulaRadiusFor(mass: number, sim: Simulator): number {
+  const raw = sim.nebulaRadiusCoeff * Math.pow(Math.max(mass, 0), sim.nebulaRadiusExp);
+  return Math.max(5.0, Math.min(sim.nebulaRadiusCap, raw));
+}
+
 export function checkNebulaFormation(sim: Simulator): void {
   let count = 0;
   for (const e of sim.effectors) if (e.type === 'nebula') count++;
@@ -61,9 +68,17 @@ export function updateNebulae(sim: Simulator): void {
   if (sim.effectors.length === 0) return;
   const dmId = sim.dmSpeciesId;
   const removed: Effector[] = [];
+
   for (const e of sim.effectors) {
     if (e.type !== 'nebula') continue;
-    const R2 = e.radius * e.radius;
+
+    // Scan slightly beyond the current radius — this lets a nebula accrete
+    // gas drifting at its boundary, which is the key to runaway growth into
+    // a GMC. Without this, mass plateaus at whatever was in the initial
+    // detection ball.
+    const scanR = e.radius * sim.nebulaScanExpansion;
+    const R2 = scanR * scanR;
+
     let cx = 0, cy = 0, cz = 0;
     let vx = 0, vy = 0, vz = 0;
     let totM = 0;
@@ -83,13 +98,19 @@ export function updateNebulae(sim: Simulator): void {
       vz += sim.velocities[i * 3 + 2] * m;
       totM += m;
     }
+
     if (totM < sim.nebulaDissolveMassMin) {
       removed.push(e);
       continue;
     }
+
     cx /= totM; cy /= totM; cz /= totM;
     vx /= totM; vy /= totM; vz /= totM;
-    const alpha = 0.25;
+
+    // Faster centroid tracking — fast-moving gas streams won't leave the
+    // nebula behind. Velocity is recorded for diagnostics but motion is
+    // entirely driven by gas COM.
+    const alpha = 0.4;
     e.x = e.x * (1 - alpha) + cx * alpha;
     e.y = e.y * (1 - alpha) + cy * alpha;
     e.z = e.z * (1 - alpha) + cz * alpha;
@@ -97,8 +118,9 @@ export function updateNebulae(sim: Simulator): void {
     e.vy = vy;
     e.vz = vz;
     e.strength = totM;
-    e.radius = Math.max(5.0, Math.min(sim.nebulaRadiusCap, Math.sqrt(totM) * sim.nebulaRadiusCoeff));
+    e.radius = nebulaRadiusFor(totM, sim);
   }
+
   for (const e of removed) {
     const idx = sim.effectors.indexOf(e);
     if (idx >= 0) {
@@ -106,6 +128,7 @@ export function updateNebulae(sim: Simulator): void {
       sim.onEffectorRemoved?.(e, 'consumed');
     }
   }
+
   mergeOverlappingNebulae(sim);
 }
 
@@ -116,19 +139,28 @@ function mergeOverlappingNebulae(sim: Simulator): void {
   const list: Effector[] = [];
   for (const e of sim.effectors) if (e.type === 'nebula') list.push(e);
   if (list.length < 2) return;
+
   const removed = new Set<Effector>();
   for (let i = 0; i < list.length; i++) {
     if (removed.has(list[i])) continue;
+
     for (let j = i + 1; j < list.length; j++) {
       if (removed.has(list[j])) continue;
+
       const a = list[i], b = list[j];
       const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
       const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (d > (a.radius + b.radius) * 0.7) continue;
+
+      // Generous merge: trigger when either nebula's edge reaches the other's
+      // center (mergeFactor=1.0). Previously required deep overlap, which
+      // meant nebulae floated past each other without coalescing.
+      if (d > (a.radius + b.radius) * sim.nebulaMergeFactor) continue;
+
       const ma = a.strength, mb = b.strength;
       const total = ma + mb;
       const keeper = ma >= mb ? a : b;
       const other = ma >= mb ? b : a;
+
       keeper.x = (a.x * ma + b.x * mb) / total;
       keeper.y = (a.y * ma + b.y * mb) / total;
       keeper.z = (a.z * ma + b.z * mb) / total;
@@ -136,11 +168,13 @@ function mergeOverlappingNebulae(sim: Simulator): void {
       keeper.vy = (a.vy * ma + b.vy * mb) / total;
       keeper.vz = (a.vz * ma + b.vz * mb) / total;
       keeper.strength = total;
-      keeper.radius = Math.min(sim.nebulaRadiusCap, Math.sqrt(total) * sim.nebulaRadiusCoeff);
+      keeper.radius = nebulaRadiusFor(total, sim);
+
       removed.add(other);
       sim.evNebulaMerger++;
     }
   }
+
   if (removed.size === 0) return;
   for (let k = sim.effectors.length - 1; k >= 0; k--) {
     if (removed.has(sim.effectors[k])) {

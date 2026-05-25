@@ -803,8 +803,12 @@ export class Scene {
   // of >= `galaxyMinStars` is rendered as a single diffuse halo. This drops
   // the previous "halo per BH" assumption (real galaxies don't need a BH,
   // and post-merger galaxies have multiple BHs inside one halo).
-  private readonly galaxyLinkRadius = 12;
-  private readonly galaxyMinStars = 4;
+  //
+  // linkRadius widened to capture loose stellar associations (real dwarf
+  // galaxies span ~kpc with stars sparsely placed). minStars dropped to 3
+  // so small clusters still register as a halo.
+  private readonly galaxyLinkRadius = 18;
+  private readonly galaxyMinStars = 3;
   private syncGalaxies(sim: Simulator): void {
     const stars: Effector[] = [];
     const bhs: Effector[] = [];

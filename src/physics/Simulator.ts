@@ -239,9 +239,18 @@ export class Simulator {
   // Below this mass an active nebula's gas is "protected" from continuous
   // star formation so it can grow into a giant molecular cloud first. Once a
   // nebula matures past the threshold, SF proceeds normally inside it.
-  nebulaMaturityMass = 90;
-  nebulaRadiusCap = 35;
-  nebulaRadiusCoeff = 1.8;
+  nebulaMaturityMass = 120;
+  // Radius as a power law of mass (R = coeff · M^exp). A sub-linear power < 1
+  // keeps small nebulae compact while letting massive GMCs become genuinely
+  // large. sqrt(M) was too slow to reward accretion visually.
+  nebulaRadiusCap = 60;
+  nebulaRadiusCoeff = 1.6;
+  nebulaRadiusExp = 0.6;
+  // Scan beyond the current radius so a nebula can accrete gas at its edge
+  // and grow over time, instead of being capped at its initial radius.
+  nebulaScanExpansion = 1.3;
+  // How aggressively two nebulae fuse: 0 = exact touch only, 1+ = generous.
+  nebulaMergeFactor = 1.0;
   nebulaFormationTimer = 0;
   nebulaCounter = 0;
 
