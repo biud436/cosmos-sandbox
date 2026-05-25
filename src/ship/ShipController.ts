@@ -89,6 +89,7 @@ export class ShipController {
   // manual input. This is how dex-entry "→ 이동" buttons work.
   private autoTarget: THREE.Vector3 | null = null;
   private autoStandoff = 0;
+  private autoLabel = '';
 
   // Circular orbit around a moving target. `target` is a getter so the ship
   // can track planets that are themselves orbiting their host star. The orbit
@@ -102,11 +103,24 @@ export class ShipController {
     angle: number;
     angularSpeed: number;
     label: string;
+    /** Cumulative free-look offsets relative to the look-at orientation. */
+    lookYaw: number;
+    lookPitch: number;
   } | null = null;
 
   /** True while the ship is in a forced circular orbit (set via enterOrbit). */
   get orbiting(): { label: string; radius: number } | null {
     return this.orbit ? { label: this.orbit.label, radius: this.orbit.radius } : null;
+  }
+
+  /** The current navigation focus (orbit center or autopilot target) and
+   *  a human label for it. Returns null when the player has no active
+   *  destination — the HUD uses this to decide whether to draw an
+   *  off-screen direction arrow. */
+  getNavTarget(): { position: THREE.Vector3; label: string } | null {
+    if (this.orbit) return { position: this.orbit.target().clone(), label: this.orbit.label };
+    if (this.autoTarget) return { position: this.autoTarget.clone(), label: this.autoLabel };
+    return null;
   }
 
   // Listener refs (so we can detach)
@@ -170,9 +184,10 @@ export class ShipController {
    * (so the player ends up facing the target from outside, not buried in it).
    * Any manual input cancels it.
    */
-  glideTo(target: THREE.Vector3, standoff: number): void {
+  glideTo(target: THREE.Vector3, standoff: number, label = '항법 목적지'): void {
     this.autoTarget = target.clone();
     this.autoStandoff = Math.max(0.01, standoff);
+    this.autoLabel = label;
     this.orbit = null;
   }
 
@@ -183,35 +198,63 @@ export class ShipController {
   /**
    * Lock the ship into a circular orbit around a target that may itself be
    * moving (planets revolve around stars). `getTarget` is invoked each
-   * frame so the orbit follows. The plane is chosen at engagement from the
-   * ship's current radial direction and is then held in absolute world
-   * orientation. Manual thrust or X breaks the orbit.
+   * frame so the orbit follows.
+   *
+   * `minRadius` is the closest the orbit may sit (typically a small multiple
+   * of the target's body radius). The actual orbit radius is the ship's
+   * *current* distance from the target, clamped to [minRadius, minRadius*8].
+   * This avoids the previous "teleport snap to fixed radius" behavior.
+   *
+   * The orbital tangent is taken from the ship's current velocity (projected
+   * onto the orbit plane); if velocity is too small or radial, a default
+   * world-up-aligned tangent is used. Manual thrust or X breaks the orbit.
    */
-  enterOrbit(getTarget: () => THREE.Vector3, radius: number, label: string): void {
+  enterOrbit(getTarget: () => THREE.Vector3, minRadius: number, label: string): void {
     this.autoTarget = null;
     const tgt = getTarget();
     let radial = this.position.clone().sub(tgt);
-    if (radial.lengthSq() < 1e-3) radial.set(1, 0, 0);
+    const currentDist = radial.length();
+    if (currentDist < 1e-3) {
+      // Ship is essentially on top of the target — use a small offset along
+      // its current forward axis so we don't divide by zero.
+      radial = this.tmpForward.set(0, 0, -1).applyQuaternion(this.orientation).clone().multiplyScalar(-minRadius);
+    }
+    const orbitR = Math.min(Math.max(currentDist, minRadius), minRadius * 8);
     radial.normalize();
 
-    // Build an orbit plane: normal preferentially aligned with world up,
-    // but if the radial is nearly vertical pick a side axis to avoid a
-    // degenerate cross-product.
-    let normal = new THREE.Vector3(0, 1, 0).cross(radial);
-    if (normal.lengthSq() < 0.05) {
-      normal = new THREE.Vector3(0, 0, 1).cross(radial);
+    // Tangent direction: prefer the ship's *current* velocity (projected to
+    // the plane perpendicular to radial). This makes orbit entry feel like
+    // a smooth circular continuation of motion rather than a snap.
+    let tangential = new THREE.Vector3();
+    const vLen = this.velocity.length();
+    if (vLen > 0.05) {
+      tangential.copy(this.velocity).addScaledVector(radial, -this.velocity.dot(radial));
+      if (tangential.lengthSq() < 1e-4) tangential.set(0, 0, 0);
     }
-    normal.normalize();
-    const tangential = new THREE.Vector3().crossVectors(normal, radial).normalize();
+    if (tangential.lengthSq() < 1e-4) {
+      // Fall back to a world-up-aligned tangent.
+      let normal = new THREE.Vector3(0, 1, 0).cross(radial);
+      if (normal.lengthSq() < 0.05) normal = new THREE.Vector3(0, 0, 1).cross(radial);
+      normal.normalize();
+      tangential.crossVectors(normal, radial);
+    }
+    tangential.normalize();
+
+    // Tangential speed: a fixed linear budget so big orbits feel
+    // proportionally slower in angle but identical in flow speed.
+    const tangentialSpeed = 8; // u/s — comfortable scenic pace
+    const angularSpeed = tangentialSpeed / orbitR;
 
     this.orbit = {
       target: getTarget,
-      radius,
+      radius: orbitR,
       basisU: radial,
       basisV: tangential,
       angle: 0,
-      angularSpeed: 0.45, // rad/sec → period ~14s
+      angularSpeed,
       label,
+      lookYaw: 0,
+      lookPitch: 0,
     };
     this.velocity.set(0, 0, 0);
   }
@@ -242,22 +285,26 @@ export class ShipController {
           tgt.y + (this.orbit.basisU.y * cosA + this.orbit.basisV.y * sinA) * this.orbit.radius,
           tgt.z + (this.orbit.basisU.z * cosA + this.orbit.basisV.z * sinA) * this.orbit.radius,
         );
-        // Look at target (gives the player a steady inward view)
+        // Free-look offsets accumulate so the player can pan around while
+        // the autopilot maintains the inward-facing look-at as a baseline.
+        // Pitch is clamped to avoid the camera going past the poles.
+        this.orbit.lookYaw   += this.yawDelta;
+        this.orbit.lookPitch = Math.max(-1.3, Math.min(1.3, this.orbit.lookPitch + this.pitchDelta));
+        this.yawDelta = 0;
+        this.pitchDelta = 0;
+
+        // Base: look toward target with world-up; offset: persistent yaw/pitch.
         const lookM = new THREE.Matrix4().lookAt(this.position, tgt, new THREE.Vector3(0, 1, 0));
         this.orientation.setFromRotationMatrix(lookM);
-        // Mouse-look still applies on top (yaw/pitch deltas), so the player
-        // can rotate their head while the autopilot maintains the orbit.
-        if (this.yawDelta !== 0) {
-          this.tmpQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -this.yawDelta);
+        if (this.orbit.lookYaw !== 0) {
+          this.tmpQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -this.orbit.lookYaw);
           this.orientation.multiply(this.tmpQuat);
         }
-        if (this.pitchDelta !== 0) {
-          this.tmpQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -this.pitchDelta);
+        if (this.orbit.lookPitch !== 0) {
+          this.tmpQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -this.orbit.lookPitch);
           this.orientation.multiply(this.tmpQuat);
         }
         this.orientation.normalize();
-        this.yawDelta = 0;
-        this.pitchDelta = 0;
         this.velocity.set(0, 0, 0);
         this.camera.position.copy(this.position);
         this.camera.quaternion.copy(this.orientation);
@@ -265,11 +312,12 @@ export class ShipController {
       }
     }
 
-    // 0. Auto-pilot: if active and the player hasn't given input, accelerate
-    //    toward the target and orient the ship's forward axis at it.
+    // 0. Auto-pilot: if active and the player hasn't given input, orient and
+    //    accelerate toward the target with a distance-aware speed plan.
     if (this.autoTarget) {
       const userInput = this.keys.has('w') || this.keys.has('s') || this.keys.has('a') || this.keys.has('d')
-        || this.keys.has(' ') || this.keys.has('c') || this.keys.has('q') || this.keys.has('e')
+        || this.keys.has('r') || this.keys.has('f')
+        || this.keys.has('q') || this.keys.has('e')
         || this.keys.has('x');
       if (userInput) {
         this.autoTarget = null;
@@ -277,24 +325,38 @@ export class ShipController {
         const toTarget = this.tmpForward.copy(this.autoTarget).sub(this.position);
         const dist = toTarget.length();
         if (dist <= this.autoStandoff * 1.05) {
-          // Arrived — brake and disengage.
-          this.velocity.multiplyScalar(Math.exp(-6 * dt));
-          if (this.velocity.lengthSq() < 1e-4) this.velocity.set(0, 0, 0);
+          // Arrived — hard brake and disengage so the ship stops cleanly
+          // rather than coasting through the standoff with residual velocity.
+          this.velocity.set(0, 0, 0);
           this.autoTarget = null;
         } else {
-          // Aim: slerp orientation toward look-at quaternion (smooth turn).
+          // Aim first: slerp orientation toward look-at. Faster slerp than
+          // before so the ship's forward axis catches up with the
+          // already-pointed velocity quickly.
           const lookM = new THREE.Matrix4().lookAt(this.position, this.autoTarget, new THREE.Vector3(0, 1, 0));
           const lookQ = new THREE.Quaternion().setFromRotationMatrix(lookM);
-          this.orientation.slerp(lookQ, Math.min(1, dt * 3.5));
+          this.orientation.slerp(lookQ, Math.min(1, dt * 5));
 
-          // Speed plan: cruise close to lightspeed for autopilot, then ease
-          // into the standoff radius. We allow autopilot to brush against c
-          // since it's a deliberate "travel to entry" action.
-          const cruise = 0.8 * LIGHTSPEED_UNITS;
-          const ease = Math.min(1, (dist - this.autoStandoff) / (this.autoStandoff * 4));
-          const desiredSpeed = cruise * ease + 2 * (1 - ease); // floor of 2 u/s near arrival
+          // Speed plan: top speed scales with travel distance — short hops
+          // shouldn't blow past at near-c. Brake zone is generous so we never
+          // overshoot the standoff.
+          //
+          // travelRange spans from the moment we engaged autopilot to arrival;
+          // we don't have that handy without storing initial dist, so use the
+          // current dist as the scale instead — it's a conservative proxy
+          // that gives close targets a sub-c cap.
+          const travel = Math.max(0, dist - this.autoStandoff);
+          const maxCruise = Math.min(0.6 * LIGHTSPEED_UNITS, 6 + travel * 1.2);
+          const brakeZone = Math.max(this.autoStandoff * 6, maxCruise * 0.6);
+          const ease = Math.min(1, travel / brakeZone);
+          const desiredSpeed = Math.max(1.5, maxCruise * ease);
           const dir = toTarget.normalize();
-          this.velocity.copy(dir).multiplyScalar(desiredSpeed);
+          // Blend velocity toward the desired vector instead of hard-setting,
+          // so the ship's apparent inertia stays believable.
+          const blend = Math.min(1, dt * 4);
+          this.velocity.x += (dir.x * desiredSpeed - this.velocity.x) * blend;
+          this.velocity.y += (dir.y * desiredSpeed - this.velocity.y) * blend;
+          this.velocity.z += (dir.z * desiredSpeed - this.velocity.z) * blend;
         }
       }
     }
@@ -398,10 +460,13 @@ export class ShipController {
   // ---- input handlers ----
 
   private isHijackedKey(key: string): boolean {
+    // Note: 'g' is intentionally NOT hijacked — main.ts owns the orbit-toggle
+    // shortcut, and stealing it here (with stopImmediatePropagation in capture
+    // phase) would silently prevent orbit entry from ever firing.
     return (
       key === 'w' || key === 'a' || key === 's' || key === 'd' ||
       key === 'q' || key === 'e' || key === 'r' || key === 'f' ||
-      key === 'g' || key === 'x' ||
+      key === 'x' ||
       key === ' ' || key === 'spacebar' || key === 'shift'
     );
   }

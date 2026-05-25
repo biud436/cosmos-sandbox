@@ -48,7 +48,7 @@ export class ShipMenu {
         </div>
         <div class="ship-menu-body" id="ship-menu-body"></div>
         <div class="ship-menu-footer">
-          <button class="ship-menu-action" id="ship-menu-resume">▶ 우주선으로 복귀 (ESC)</button>
+          <button class="ship-menu-action" id="ship-menu-resume">▶ 우주선으로 복귀 (Tab)</button>
           <button class="ship-menu-action ghost" id="ship-menu-exit">🌌 시뮬레이션 시점으로</button>
         </div>
       </div>
@@ -196,7 +196,7 @@ export class ShipMenu {
           <div><kbd>X</kbd> — 즉시 정지</div>
           <div><kbd>Space</kbd> — 비행 보조 토글</div>
           <div><kbd>G</kbd> — 조준 대상 궤도 진입/이탈</div>
-          <div><kbd>ESC</kbd> — 메뉴</div>
+          <div><kbd>Tab</kbd> — 메뉴 열기/닫기</div>
         </div>
         <div class="ship-menu-section-title">팁</div>
         <div class="ship-menu-tips">

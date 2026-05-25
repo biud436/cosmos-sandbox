@@ -32,6 +32,8 @@ export class ShipHUD {
   private readonly orbitBadge: HTMLElement;
   private readonly targetBracket: HTMLElement;
   private readonly targetInfo: HTMLElement;
+  private readonly navArrow: HTMLElement;
+  private readonly navLabel: HTMLElement;
 
   private visible_ = false;
 
@@ -58,11 +60,15 @@ export class ShipHUD {
         <div class="ship-thr-bar"><div class="ship-thr-fill" id="ship-thr-fill"></div></div>
       </div>
       <div class="ship-hud-hint" id="ship-hud-hint">
-        클릭하여 마우스 잠금 · WASD 이동 · Q/E 롤 · R/F 상하 · Shift 부스트 · X 정지 · Space 비행보조 · G 궤도 · ESC 메뉴
+        클릭하여 마우스 잠금 · WASD 이동 · Q/E 롤 · R/F 상하 · Shift 부스트 · X 정지 · Space 비행보조 · G 궤도 · Tab 메뉴
       </div>
       <div class="ship-reticle"></div>
       <div class="ship-target-bracket" id="ship-target-bracket" style="display:none"></div>
       <div class="ship-target-info" id="ship-target-info" style="display:none"></div>
+      <div class="ship-nav-arrow" id="ship-nav-arrow" style="display:none">
+        <div class="ship-nav-tri"></div>
+        <div class="ship-nav-label" id="ship-nav-label">—</div>
+      </div>
     `;
     container.appendChild(this.root);
     this.posEl = this.root.querySelector('#ship-pos') as HTMLElement;
@@ -78,6 +84,8 @@ export class ShipHUD {
     this.orbitBadge = this.root.querySelector('#ship-badge-orbit') as HTMLElement;
     this.targetBracket = this.root.querySelector('#ship-target-bracket') as HTMLElement;
     this.targetInfo = this.root.querySelector('#ship-target-info') as HTMLElement;
+    this.navArrow = this.root.querySelector('#ship-nav-arrow') as HTMLElement;
+    this.navLabel = this.root.querySelector('#ship-nav-label') as HTMLElement;
 
     this.injectStyles();
     this.setVisible(false);
@@ -92,7 +100,10 @@ export class ShipHUD {
     return this.visible_;
   }
 
-  /** Called every frame while ship mode is active. */
+  /** Called every frame while ship mode is active.
+   *  `nav` is the persistent navigation focus (autopilot target / orbit
+   *  center / etc.) — if set and off-screen we draw an edge arrow toward
+   *  it so the player can re-acquire it. */
   update(
     state: ShipState,
     camera: THREE.PerspectiveCamera,
@@ -100,6 +111,7 @@ export class ShipHUD {
     target: HUDTarget | null,
     flightAssist: boolean,
     orbiting: { label: string; radius: number } | null,
+    nav: { position: THREE.Vector3; label: string } | null = null,
   ): void {
     if (!this.visible_) return;
     const p = state.position;
@@ -140,6 +152,58 @@ export class ShipHUD {
     }
 
     this.drawGizmo(camera);
+    this.updateNavArrow(nav, state, camera);
+  }
+
+  private updateNavArrow(
+    nav: { position: THREE.Vector3; label: string } | null,
+    state: ShipState,
+    camera: THREE.PerspectiveCamera,
+  ): void {
+    if (!nav) { this.navArrow.style.display = 'none'; return; }
+    const ndc = nav.position.clone().project(camera);
+    const onScreen = ndc.z > -1 && ndc.z < 1 && Math.abs(ndc.x) <= 0.97 && Math.abs(ndc.y) <= 0.97;
+    if (onScreen) { this.navArrow.style.display = 'none'; return; }
+
+    const w = this.root.clientWidth;
+    const h = this.root.clientHeight;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Build a direction in screen space toward the target. If z > 1 (behind
+    // camera), invert XY so the arrow still points away from the target's
+    // "behind us" projection.
+    let dx = ndc.x;
+    let dy = -ndc.y;
+    if (ndc.z > 1) { dx = -dx; dy = -dy; }
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-4) { this.navArrow.style.display = 'none'; return; }
+    dx /= len; dy /= len;
+
+    // Clamp the arrow to a 40px-inset ring along the viewport edge so it
+    // hugs the border on whichever side the target lies.
+    const margin = 48;
+    const halfW = cx - margin;
+    const halfH = cy - margin;
+    const tEdge = Math.min(halfW / Math.abs(dx || 1e-6), halfH / Math.abs(dy || 1e-6));
+    const ax = cx + dx * tEdge;
+    const ay = cy + dy * tEdge;
+
+    const dist = nav.position.distanceTo(state.position);
+    this.navArrow.style.display = '';
+    this.navArrow.style.left = `${ax}px`;
+    this.navArrow.style.top = `${ay}px`;
+    // The container itself is translated to the edge but NOT rotated, so the
+    // label stays upright. Only the inner triangle rotates to point outward.
+    // CSS rotation is clockwise-positive; the triangle's rest orientation
+    // points "up" (screen -Y). The angle that takes (0,-1) → (dx,dy) is
+    // atan2(dx, -dy).
+    const tri = this.navArrow.querySelector('.ship-nav-tri') as HTMLElement | null;
+    if (tri) {
+      const angle = Math.atan2(dx, -dy);
+      tri.style.transform = `rotate(${angle}rad)`;
+    }
+    this.navLabel.textContent = `${nav.label} · ${dist.toFixed(1)} u`;
   }
 
   private updateTargetBracket(target: HUDTarget, camera: THREE.PerspectiveCamera, distance: number): void {
@@ -409,6 +473,32 @@ export class ShipHUD {
       }
       .tinfo-v {
         color: #e8f3ff; font-variant-numeric: tabular-nums;
+      }
+      .ship-nav-arrow {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        display: flex; flex-direction: column; align-items: center;
+        gap: 4px;
+        pointer-events: none;
+        text-shadow: 0 0 6px rgba(255, 200, 80, 0.6);
+      }
+      .ship-nav-tri {
+        width: 0; height: 0;
+        border-left: 9px solid transparent;
+        border-right: 9px solid transparent;
+        border-bottom: 14px solid rgba(255, 220, 130, 0.92);
+        filter: drop-shadow(0 0 6px rgba(255, 200, 80, 0.6));
+        transform-origin: 50% 67%;
+        /* Default points up (0deg); we rotate -90° in JS to point along +X. */
+      }
+      .ship-nav-label {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 10.5px; letter-spacing: 0.5px;
+        color: #ffd28a;
+        background: rgba(8, 12, 22, 0.7);
+        border: 1px solid rgba(255, 220, 130, 0.35);
+        border-radius: 3px;
+        padding: 1px 6px; white-space: nowrap;
       }
     `;
     document.head.appendChild(style);

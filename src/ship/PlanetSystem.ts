@@ -28,6 +28,14 @@ export interface Planet {
   visualRadius: number;
   /** RGB in [0,1]. */
   color: [number, number, number];
+  /** Self-rotation period in ship-time seconds (visual only). */
+  spinPeriodSec: number;
+  /** Axial tilt in radians, applied to the planet's local Y axis. */
+  axialTilt: number;
+  /** Per-planet seed (decimal noise of mulberry32 output) used by the
+   * fragment shader to decorrelate surface patterns between planets of
+   * the same class. Stable for the planet's lifetime. */
+  shaderSeed: number;
 }
 
 export interface PlanetSystem {
@@ -133,6 +141,13 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
     const phase0 = rng() * Math.PI * 2;
     const inclination = (rng() - 0.5) * 0.12;
 
+    // Visual-only rotation and tilt. Gas giants spin fast (10–25s), rocky
+    // worlds slow (40–80s) — keeps Jupiter-feel vs Earth-feel.
+    const spinFast = cls === 'gas';
+    const spinPeriodSec = spinFast ? 10 + rng() * 15 : 40 + rng() * 40;
+    const axialTilt = (rng() - 0.5) * 0.7;
+    const shaderSeed = rng();
+
     planets.push({
       index: i,
       name: `${planetName(eff, i)}`,
@@ -143,6 +158,9 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
       inclination,
       visualRadius,
       color,
+      spinPeriodSec,
+      axialTilt,
+      shaderSeed,
     });
   }
 

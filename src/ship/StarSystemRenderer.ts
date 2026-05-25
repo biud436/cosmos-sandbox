@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
 import { PlanetSystem } from './PlanetSystem';
+import { createPlanetMaterial, PlanetMaterialHandle } from './PlanetShader';
 
 // Renders the procedural planets for a single visited star. Each instance
 // owns its own scene group so it can be detached cleanly when the LRU
@@ -15,9 +16,11 @@ export class StarSystemView {
   private readonly planetMeshes: THREE.Mesh[] = [];
   private readonly orbitLines: THREE.LineLoop[] = [];
   private readonly planetMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly planetHandles: PlanetMaterialHandle[] = [];
   private readonly orbitMaterial: THREE.LineBasicMaterial;
   private readonly system: PlanetSystem;
   private readonly host: Effector;
+  private readonly starLight: THREE.PointLight | null;
 
   constructor(system: PlanetSystem, host: Effector) {
     this.system = system;
@@ -32,18 +35,36 @@ export class StarSystemView {
       depthWrite: false,
     });
 
+    // Stars emit light. Compact objects (BH, NS) don't — their "system" is
+    // ruins/captures, not insolation, so we leave the scene's ambient/key
+    // light to do the work. Range is set roughly to the outer planet so the
+    // light doesn't leak across the entire scene.
+    if (host.type === 'star') {
+      const intensity = Math.min(120, 30 + host.strength * 0.6);
+      const tint = new THREE.Color(1.0, 0.95, 0.85);
+      // Range = 0 means "infinite" in three.js, which would tint everything
+      // in the simulation. Cap it to a few system widths.
+      const range = Math.max(40, host.radius * 80);
+      this.starLight = new THREE.PointLight(tint, intensity, range, 2);
+      this.starLight.position.set(0, 0, 0);
+      this.group.add(this.starLight);
+    } else {
+      this.starLight = null;
+    }
+
     for (const planet of system.planets) {
-      const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(planet.color[0], planet.color[1], planet.color[2]),
-        roughness: 0.85,
-        metalness: 0.05,
-        emissive: new THREE.Color(planet.color[0] * 0.15, planet.color[1] * 0.15, planet.color[2] * 0.15),
-      });
-      const mesh = new THREE.Mesh(SPHERE_GEOM, mat);
+      const handle = createPlanetMaterial(planet);
+      const mesh = new THREE.Mesh(SPHERE_GEOM, handle.material);
       mesh.scale.setScalar(planet.visualRadius);
+      // Apply axial tilt once as a rotation around X; spin advances around
+      // the planet's local Y in update(). Composing tilt as a separate
+      // parent Group would be cleaner but a single rotation is enough since
+      // the unit-sphere geometry has no preferred up.
+      mesh.rotation.x = planet.axialTilt;
       this.group.add(mesh);
       this.planetMeshes.push(mesh);
-      this.planetMaterials.push(mat);
+      this.planetMaterials.push(handle.material);
+      this.planetHandles.push(handle);
 
       this.orbitLines.push(this.makeOrbitLine(planet.orbitRadius, planet.inclination));
       this.group.add(this.orbitLines[this.orbitLines.length - 1]);
@@ -72,11 +93,15 @@ export class StarSystemView {
     return loop;
   }
 
-  /** Move planets along their orbits. `shipTime` is monotonic seconds. */
-  update(shipTime: number): void {
+  /** Move planets along their orbits, advance per-planet spin, and drive
+   *  the procedural-shader LOD from camera distance. `cameraPos` is
+   *  optional — when omitted, planets stay in their flat-color (uDetail=0)
+   *  state, which is the right behavior outside ship mode. */
+  update(shipTime: number, cameraPos?: THREE.Vector3): void {
     // Keep the system pinned to the host star (which may itself be moving).
     this.group.position.set(this.host.x, this.host.y, this.host.z);
 
+    const tmp = new THREE.Vector3();
     for (let i = 0; i < this.system.planets.length; i++) {
       const p = this.system.planets[i];
       const mesh = this.planetMeshes[i];
@@ -86,6 +111,28 @@ export class StarSystemView {
       const x = Math.cos(angle) * p.orbitRadius;
       const z = Math.sin(angle) * p.orbitRadius;
       mesh.position.set(x, z * sinI, z * cosI);
+
+      // Self-rotation. Tilt is baked into rotation.x; spin advances .y.
+      mesh.rotation.y = (shipTime / p.spinPeriodSec) * Math.PI * 2;
+
+      const handle = this.planetHandles[i];
+      handle.setTime(shipTime);
+
+      if (cameraPos) {
+        // World-space distance from camera to planet center.
+        tmp.copy(mesh.position).add(this.group.position);
+        const d = tmp.distanceTo(cameraPos);
+        // Detail ramp: fully procedural within ~15× the planet's radius,
+        // pure base color past ~80×. Tuned so a fly-by reveals texture
+        // around the same moment the planet visibly grows in the viewport.
+        const r = p.visualRadius;
+        const near = r * 15;
+        const far = r * 80;
+        const detail = 1.0 - Math.min(1, Math.max(0, (d - near) / (far - near)));
+        handle.setDetail(detail);
+      } else {
+        handle.setDetail(0);
+      }
     }
   }
 
@@ -113,5 +160,19 @@ export class StarSystemView {
 
   get planetSystem(): PlanetSystem {
     return this.system;
+  }
+
+  /** Outer planet's orbit radius, plus the planet's own radius — the
+   * largest distance from the host star at which a visit still passes
+   * through actual content. Used to size the visit-detection sphere so
+   * outer planets don't fall outside the trigger when flying through. */
+  get outerExtent(): number {
+    if (this.system.planets.length === 0) return 0;
+    let max = 0;
+    for (const p of this.system.planets) {
+      const r = p.orbitRadius + p.visualRadius;
+      if (r > max) max = r;
+    }
+    return max;
   }
 }

@@ -123,9 +123,9 @@ function ensureSystemFor(eff: Effector): StarSystemView | null {
 
 // Smoothly glide the camera (in ship mode) to a target point. Cancels the
 // ship's accumulated velocity and re-orients toward the target.
-function flyTo(target: THREE.Vector3, standoff: number): void {
+function flyTo(target: THREE.Vector3, standoff: number, label?: string): void {
   if (!ship.enabled) return;
-  ship.glideTo(target, standoff);
+  ship.glideTo(target, standoff, label);
 }
 
 function setShipMode(active: boolean): void {
@@ -157,7 +157,7 @@ shipMenu.bind(dex, {
       shipHUD.flashHint(`${entry.starName}은(는) 더 이상 존재하지 않습니다.`);
       return;
     }
-    flyTo(new THREE.Vector3(eff.x, eff.y, eff.z), Math.max(eff.radius * 6, 5));
+    flyTo(new THREE.Vector3(eff.x, eff.y, eff.z), Math.max(eff.radius * 6, 5), entry.starName);
   },
   onSelectPlanet: (entry) => {
     const eff = sim.effectors.find((e) => e.id === entry.starId);
@@ -180,7 +180,7 @@ shipMenu.bind(dex, {
     const x = Math.cos(angle) * planet.orbitRadius;
     const z = Math.sin(angle) * planet.orbitRadius;
     const target = new THREE.Vector3(eff.x + x, eff.y + z * sinI, eff.z + z * cosI);
-    flyTo(target, Math.max(planet.visualRadius * 5, 1.5));
+    flyTo(target, Math.max(planet.visualRadius * 5, 1.5), entry.planetName);
   },
   onExitShipMode: () => setShipMode(false),
   onResetDex: () => {
@@ -189,22 +189,33 @@ shipMenu.bind(dex, {
   },
 });
 
-// ESC: toggle menu while in ship mode. Pointer-lock release is intercepted
-// because the browser releases lock on ESC anyway — we just convert that
-// signal into "open menu". Pressing ESC again (or the Resume button) closes
-// the menu and the user clicks the viewport to re-lock.
+// Menu shortcuts in ship mode:
+//   Tab — open / close the menu (primary; edge-triggered, no auto-repeat).
+//   Esc — close the menu when open; never opens. Plain Esc just releases
+//         the browser pointer lock, which is what the OS-level expectation is.
 window.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
   if (!ship.enabled) return;
-  if (shipMenu.isOpen) shipMenu.close();
-  else shipMenu.open();
+  if (e.key === 'Tab') {
+    if (e.repeat) return;
+    // Block focus traversal so Tab doesn't escape to the surrounding chrome.
+    e.preventDefault();
+    if (shipMenu.isOpen) shipMenu.close();
+    else shipMenu.open();
+    return;
+  }
+  if (e.key === 'Escape') {
+    if (shipMenu.isOpen) shipMenu.close();
+  }
 });
 
 // G: engage circular orbit around the currently-reticled target. Tap again
-// while orbiting to break out (or any thrust key).
+// while orbiting to break out (or any thrust key). Edge-triggered so holding
+// the key doesn't flip-flop the orbit state every frame.
 window.addEventListener('keydown', (e) => {
   if (e.key.toLowerCase() !== 'g') return;
+  if (e.repeat) return;
   if (!ship.enabled) return;
+  if (shipMenu.isOpen) return;
   if (ship.orbiting) { ship.exitOrbit(); shipHUD.flashHint('궤도 이탈'); return; }
   if (!reticleTarget) { shipHUD.flashHint('레티클에 대상이 없습니다'); return; }
   const r = Math.max(reticleTarget.radius * 4, 2);
@@ -327,13 +338,12 @@ rendererEl.addEventListener('pointerup', (e) => {
 
 layout.log('Cosmos sandbox ready.');
 
-// Visit radius is a function of star physical radius. Tuned so the outer
-// planet (orbit ~innerR × 3-6, innerR ~ eff.radius × 4-7) falls inside the
-// detection sphere — otherwise the player would fly past the system without
-// any planets materializing. Roughly ~30× star radius covers a full system.
-const VISIT_RADIUS_MULT = 32;
-/** Half-angle of the reticle's targeting cone, in radians (~6°). */
-const TARGET_CONE_COS = Math.cos(0.10);
+// Visit-radius floor in case the star has no system yet generated.
+const VISIT_RADIUS_MIN = 60;
+/** Wide acquisition cone: ~15° half-angle so planets aren't pixel-hunt. */
+const RETICLE_CONE_COS = Math.cos(0.26);
+/** Tighter "primary lock" cone for tie-breaking when multiple targets fit. */
+const RETICLE_PRIMARY_COS = Math.cos(0.07);
 
 interface ReticleTarget {
   kind: 'planet' | 'star';
@@ -370,6 +380,16 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
   let best: ReticleTarget | null = null;
   let bestScore = -Infinity;
 
+  // Scoring: how centered (cos), weighted by apparent angular size so a
+  // big nearby planet wins over a far star at the same crosshair offset,
+  // and a primary-cone hit beats a wide-cone hit on ties.
+  const scoreOf = (cos: number, d: number, bodyRadius: number): number => {
+    const angularSize = Math.atan2(bodyRadius, Math.max(0.5, d));
+    const center = (cos - RETICLE_CONE_COS) / (1 - RETICLE_CONE_COS); // 0..1
+    const primary = cos >= RETICLE_PRIMARY_COS ? 0.5 : 0;
+    return center * 1.0 + angularSize * 6.0 + primary;
+  };
+
   // Planets in materialized systems
   for (const view of starSystems.values()) {
     if (!view.group.visible) continue;
@@ -388,11 +408,11 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
       const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
       if (d < 0.001) continue;
       const cos = (dx*forward.x + dy*forward.y + dz*forward.z) / d;
-      if (cos < TARGET_CONE_COS) continue;
-      const score = cos - d * 0.0001;
+      if (cos < RETICLE_CONE_COS) continue;
+      const score = scoreOf(cos, d, planet.visualRadius);
       if (score > bestScore) {
         bestScore = score;
-        const sysCenter = view; // capture for moving-host tracking
+        const sysCenter = view;
         best = {
           kind: 'planet',
           label: planet.name,
@@ -426,8 +446,8 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
     const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
     if (d < 0.001) continue;
     const cos = (dx*forward.x + dy*forward.y + dz*forward.z) / d;
-    if (cos < TARGET_CONE_COS) continue;
-    const score = cos - d * 0.0001;
+    if (cos < RETICLE_CONE_COS) continue;
+    const score = scoreOf(cos, d, eff.radius);
     if (score > bestScore) {
       bestScore = score;
       const captured = eff;
@@ -495,18 +515,30 @@ function loop(): void {
     const state = ship.getState();
     const nearest = scene.nearestStar(sim, state.position);
 
-    // Visit detection: if the ship is within VISIT_RADIUS_MULT * starRadius,
-    // ensure that star's planet system is loaded (LRU may evict the oldest).
-    if (nearest && nearest.distance < nearest.eff.radius * VISIT_RADIUS_MULT) {
-      const view = ensureSystemFor(nearest.eff);
-      if (view) view.group.visible = true;
+    // Visit detection: trigger if the ship is within the system's outer
+    // planet (for already-materialized systems) or a generous floor for
+    // not-yet-materialized ones. Without the floor, tiny stars would have
+    // a trigger smaller than their actual planet system and the player
+    // could fly clean through without anything spawning.
+    if (nearest) {
+      const existing = starSystems.get(nearest.eff.id);
+      const trigger = existing
+        ? Math.max(existing.outerExtent * 1.4, VISIT_RADIUS_MIN)
+        : VISIT_RADIUS_MIN;
+      if (nearest.distance < trigger) {
+        const view = ensureSystemFor(nearest.eff);
+        if (view) view.group.visible = true;
+      }
     }
     // Drive orbital motion + keep meshes pinned to (possibly moving) hosts.
+    // Pass the ship's position so each system can advance its planets'
+    // procedural-detail LOD uniform — close-up = full shader, far = flat.
     for (const view of starSystems.values()) {
-      if (view.group.visible) view.update(shipProperTime);
+      if (view.group.visible) view.update(shipProperTime, state.position);
     }
     reticleTarget = pickReticleTarget(scene.camera);
-    shipHUD.update(state, scene.camera, nearest, reticleTarget, ship.flightAssist, ship.orbiting);
+    const navTarget = ship.getNavTarget();
+    shipHUD.update(state, scene.camera, nearest, reticleTarget, ship.flightAssist, ship.orbiting, navTarget);
   }
 
   scene.sync(sim, elapsed);
