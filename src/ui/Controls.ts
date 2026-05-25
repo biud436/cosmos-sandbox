@@ -14,6 +14,38 @@ import {
   FusionPreset,
 } from './subPresets';
 
+// Mass → coarse spectral class label. Mirrors the color table in Scene.ts.
+function spectralClassName(mass: number): string {
+  if (mass < 12)  return 'M (적색 왜성)';
+  if (mass < 22)  return 'K (주황)';
+  if (mass < 40)  return 'G (태양형)';
+  if (mass < 70)  return 'F/A (백색)';
+  if (mass < 130) return 'B (청백)';
+  return            'O / Wolf-Rayet (청색)';
+}
+
+// Predict the end state of a star given its current mass. Stays in sync with
+// the 4-pathway endOfStarLife in starFormation.ts.
+function expectedFate(mass: number, sim: Simulator): string {
+  if (mass < sim.supernovaMassThreshold) return '조용한 죽음 (잔재 없음)';
+  if (mass < sim.neutronStarUpperMass)   return 'Type II SN → 중성자별';
+  if (mass < 150)                        return 'Type II SN → 항성질량 BH';
+  if (mass < 250)                        return 'Pair-instability SN (잔재 없음)';
+  return '직접 붕괴 → 무거운 BH';
+}
+
+function popGenLabel(Z: number): string {
+  if (Z < 0.05) return 'Pop III (무금속)';
+  if (Z < 0.30) return 'Pop II (저금속)';
+  return         'Pop I (금속 풍부)';
+}
+
+function bhClassLabel(mass: number): string {
+  if (mass < 50)   return '항성질량 BH';
+  if (mass < 300)  return '중간질량 BH';
+  return             '초대질량 BH (SMBH)';
+}
+
 export interface ControlsState {
   paused: boolean;
   timeScale: number;
@@ -359,6 +391,43 @@ export class Controls {
     if (eff.type === 'blackhole') {
       folder.add(eff, 'consumed').name('Consumed').disable().listen();
     }
+
+    // Science readout — properties of the body that don't change frame-to-frame
+    // (or that we treat as "stamped at birth"). Computed once at selection.
+    if (eff.type === 'star' || eff.type === 'neutron_star' || eff.type === 'blackhole') {
+      const info = folder.addFolder('📖 정보');
+
+      info.add({ v: eff.bornAt.toFixed(2) }, 'v').name('출생 시각 (sim)').disable();
+      info.add({ v: (this.sim.simTime - eff.bornAt).toFixed(2) }, 'v').name('현재 나이 (sim)').disable();
+
+      if (eff.type === 'star') {
+        info.add({ v: spectralClassName(eff.strength) }, 'v').name('분광형').disable();
+
+        const lifetime = Math.max(
+          this.sim.stellarLifetimeMin,
+          Math.min(
+            this.sim.stellarLifetimeMax,
+            this.sim.stellarLifetimeBase * Math.pow(
+              this.sim.stellarLifetimeRefMass / Math.max(eff.strength, 1e-3),
+              this.sim.stellarLifetimeExp,
+            ),
+          ),
+        );
+        info.add({ v: lifetime.toFixed(2) }, 'v').name('예상 수명 (sim)').disable();
+
+        const fate = expectedFate(eff.strength, this.sim);
+        info.add({ v: fate }, 'v').name('예상 최후').disable();
+
+        const Z = eff.metallicity ?? 0;
+        info.add({ v: Z.toFixed(3) }, 'v').name('금속도 Z').disable();
+        info.add({ v: popGenLabel(Z) }, 'v').name('Population').disable();
+      }
+
+      if (eff.type === 'blackhole') {
+        info.add({ v: bhClassLabel(eff.strength) }, 'v').name('분류').disable();
+      }
+    }
+
     folder.add({ remove: () => this.onDeleteEffector?.(eff) }, 'remove').name('🗑 Delete');
     this.selectedFolder = folder;
   }
