@@ -83,6 +83,20 @@ export class Layout {
   private readonly tsCapacity = 240;
   private tsLegendBuilt = false;
 
+  // Spectral-class histogram of currently-alive stars. Bins match the color
+  // table in Scene.ts / effectorSwatchColor (this file).
+  private readonly massBins = [
+    { label: 'M', upper: 12,       color: '#ff8c6b' },
+    { label: 'K', upper: 22,       color: '#ffb780' },
+    { label: 'G', upper: 40,       color: '#ffe5b5' },
+    { label: 'F/A', upper: 70,     color: '#fafaf0' },
+    { label: 'B', upper: 130,      color: '#d2e0ff' },
+    { label: 'O', upper: Infinity, color: '#a6c5ff' },
+  ];
+  private readonly massCanvas = document.getElementById('mass-hist') as HTMLCanvasElement;
+  private readonly massLegend = document.getElementById('mass-hist-legend')!;
+  private massLegendBuilt = false;
+
   constructor() {
     SPECIES;
   }
@@ -234,6 +248,69 @@ export class Layout {
 
     this.pushTimeSeriesSample(stats);
     this.drawTimeSeriesChart();
+    this.drawMassHistogram(sim.effectors);
+  }
+
+  private drawMassHistogram(effectors: Effector[]): void {
+    if (!this.massCanvas) return;
+    const ctx = this.massCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // Bin alive stars by spectral class
+    const counts = new Array(this.massBins.length).fill(0) as number[];
+    let total = 0;
+    for (const e of effectors) {
+      if (e.type !== 'star') continue;
+      const m = e.strength;
+      for (let i = 0; i < this.massBins.length; i++) {
+        if (m < this.massBins[i].upper) { counts[i]++; total++; break; }
+      }
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = this.massCanvas.clientWidth;
+    const cssH = this.massCanvas.clientHeight;
+    if (this.massCanvas.width !== cssW * dpr || this.massCanvas.height !== cssH * dpr) {
+      this.massCanvas.width = cssW * dpr;
+      this.massCanvas.height = cssH * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    if (!this.massLegendBuilt) {
+      this.massLegend.innerHTML = '';
+      for (const b of this.massBins) {
+        const span = document.createElement('span');
+        span.style.color = b.color;
+        span.textContent = b.label;
+        this.massLegend.appendChild(span);
+      }
+      this.massLegendBuilt = true;
+    }
+
+    if (total === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '10px sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('아직 형성된 별 없음', 8, cssH / 2);
+      return;
+    }
+
+    // Stacked horizontal bar: width per bin ∝ count / total
+    let x = 0;
+    for (let i = 0; i < this.massBins.length; i++) {
+      const w = (counts[i] / total) * cssW;
+      if (w < 0.5) { x += w; continue; }
+      ctx.fillStyle = this.massBins[i].color;
+      ctx.fillRect(x, 0, w, cssH);
+      if (w > 22) {
+        ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        ctx.font = '10px sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(counts[i]), x + 4, cssH / 2);
+      }
+      x += w;
+    }
   }
 
   private pushTimeSeriesSample(stats: ReturnType<Simulator['stats']>): void {

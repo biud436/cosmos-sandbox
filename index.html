@@ -281,6 +281,12 @@
             <div class="stat"><span class="label">★ Total formed</span><span class="value"><b id="s-sf-total">0</b></span></div>
           </div>
 
+          <div style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:10px;color:#aaa">
+            <span style="min-width:64px">★ 분광형</span>
+            <canvas id="mass-hist" width="600" height="20" style="flex:1;height:20px;display:block;background:rgba(0,0,0,0.3);border-radius:4px"></canvas>
+          </div>
+          <div id="mass-hist-legend" style="font-size:10px;color:#999;display:flex;gap:8px;padding:2px 70px;flex-wrap:wrap"></div>
+
           <canvas id="ts-chart" width="600" height="80" style="width:100%;height:80px;display:block;margin-top:6px;background:rgba(0,0,0,0.3);border-radius:4px"></canvas>
           <div id="ts-legend" style="font-size:10px;color:#999;display:flex;gap:10px;padding:2px 4px;flex-wrap:wrap"></div>
 
