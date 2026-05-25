@@ -601,6 +601,8 @@ export class Scene {
   private readonly tmpFrustum = new THREE.Frustum();
   private readonly tmpProjView = new THREE.Matrix4();
   private readonly tmpSphere = new THREE.Sphere();
+  private readonly tmpL = new THREE.Vector3();
+  private readonly tmpUp = new THREE.Vector3(0, 1, 0);
 
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
@@ -892,6 +894,36 @@ export class Scene {
         const rmsR = Math.sqrt(sumR2 / memberIdx.length);
         const radius = Math.max(3.0, rmsR * 1.6 + 1.5);
 
+        // Bulk velocity (mass-weighted) so we measure rotation in the COM frame
+        let bvx = 0, bvy = 0, bvz = 0;
+        for (const i of memberIdx) {
+          const s = stars[i];
+          bvx += s.vx * s.strength;
+          bvy += s.vy * s.strength;
+          bvz += s.vz * s.strength;
+        }
+        bvx /= totM; bvy /= totM; bvz /= totM;
+
+        // Angular momentum L = Σ m·(r × v) about COM. Disks have large coherent
+        // L; elliptical/random-motion systems have |L| ~ 0.
+        let Lx = 0, Ly = 0, Lz = 0;
+        for (const i of memberIdx) {
+          const s = stars[i];
+          const rx = s.x - cx, ry = s.y - cy, rz = s.z - cz;
+          const vx = s.vx - bvx, vy = s.vy - bvy, vz = s.vz - bvz;
+          Lx += s.strength * (ry * vz - rz * vy);
+          Ly += s.strength * (rz * vx - rx * vz);
+          Lz += s.strength * (rx * vy - ry * vx);
+        }
+        const Lmag = Math.sqrt(Lx * Lx + Ly * Ly + Lz * Lz);
+
+        // Rotational support ≈ |L| / (M · R · σ_v). We approximate σ_v with the
+        // halo's RMS extent in lieu of a separate velocity-dispersion calc.
+        // Large value → disk; small → spheroidal.
+        const rotSupport = Lmag / Math.max(totM * radius, 1e-3);
+        const flatness = Math.min(0.65, Math.max(0, rotSupport * 0.45));
+        const polarR = radius * (1 - flatness);
+
         let entry = this.galaxyHalos.get(id);
         if (!entry) {
           const hue = (this.hashGalaxyId(id) % 360) / 360;
@@ -900,7 +932,18 @@ export class Scene {
           this.galaxyHalos.set(id, entry);
         }
         entry.mesh.position.set(cx, cy, cz);
-        entry.mesh.scale.setScalar(radius);
+
+        // Align mesh's Y axis with the L vector so the oblate scaling
+        // (radius, polarR, radius) sits perpendicular to the rotation axis.
+        if (Lmag > 1e-3) {
+          const inv = 1 / Lmag;
+          this.tmpL.set(Lx * inv, Ly * inv, Lz * inv);
+          entry.mesh.quaternion.setFromUnitVectors(this.tmpUp, this.tmpL);
+        } else {
+          entry.mesh.quaternion.identity();
+        }
+        entry.mesh.scale.set(radius, polarR, radius);
+
         this.tmpSphere.center.set(cx, cy, cz);
         this.tmpSphere.radius = radius;
         entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
