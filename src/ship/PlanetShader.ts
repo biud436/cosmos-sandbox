@@ -347,6 +347,15 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
         uniform vec3 uColor3;
         uniform float uSeed;
         uniform float uBump;
+        // three.js auto-injects normalMatrix into the *vertex* shader prelude
+        // but NOT the fragment prelude. We use it below to convert the
+        // perturbed object-space normal into view space. Declaring the same
+        // uniform name in the fragment shader is enough — three.js's uniform
+        // setter recognizes it by name and uploads object.normalMatrix per
+        // draw. Without this declaration the shader fails to compile, which
+        // silently kills the planet mesh: every fragment is skipped, the
+        // body never draws, and only the atmosphere rim halo remains visible.
+        uniform mat3 normalMatrix;
         ${NOISE_GLSL}
         ${surface}
       `)
