@@ -2,6 +2,25 @@ import { SPECIES } from '../physics/types';
 import { CosmicEvent, Effector, MoleculeEntry, Simulator } from '../physics/Simulator';
 import { formatCosmicTime } from './timeFormat';
 
+// Compact effector swatch colors for the catalog UI. Stars use a coarse
+// spectral palette by mass so the list reads at a glance — bluest at top of
+// rank, red/orange near the bottom.
+function effectorSwatchColor(eff: Effector): string {
+  if (eff.type === 'neutron_star') return '#a5d2ff';
+  if (eff.type === 'blackhole') return '#ff9966';
+  if (eff.type === 'nebula') return '#ff7ab2';
+  if (eff.type === 'repulsor') return '#ff6644';
+  if (eff.type === 'freezer') return '#aaddff';
+  // star: rough mass→spectral mapping (matches Scene.ts shader palette)
+  const m = eff.strength;
+  if (m < 12)  return '#ff8c6b';
+  if (m < 22)  return '#ffb780';
+  if (m < 40)  return '#ffe5b5';
+  if (m < 70)  return '#fafaf0';
+  if (m < 130) return '#d2e0ff';
+  return            '#a6c5ff';
+}
+
 export class Layout {
   private readonly hierBody = document.getElementById('hier-body')!;
   private readonly presetSelect = document.getElementById('preset-select') as HTMLSelectElement;
@@ -29,6 +48,15 @@ export class Layout {
   private readonly sA = document.getElementById('s-a')!;
   private readonly sDM = document.getElementById('s-dm')!;
   private readonly sBary = document.getElementById('s-bary')!;
+  private readonly sNS = document.getElementById('s-ns')!;
+  private readonly sNeb = document.getElementById('s-neb')!;
+  private readonly sEra = document.getElementById('s-era')!;
+  private readonly sHubble = document.getElementById('s-hubble')!;
+  private readonly sMStar = document.getElementById('s-mstar')!;
+  private readonly sMBH = document.getElementById('s-mbh')!;
+  private readonly sZStars = document.getElementById('s-zstars')!;
+  private readonly sZ = document.getElementById('s-z')!;
+  private readonly sSfTotal = document.getElementById('s-sf-total')!;
   private readonly viewport = document.getElementById('viewport')!;
 
   private hierRows = new Map<string, { dot: HTMLElement; name: HTMLElement; count: HTMLElement; row: HTMLElement }>();
@@ -162,19 +190,33 @@ export class Layout {
     const years = stats.simTime * this.yearsPerUnit;
     const formatted = formatCosmicTime(years);
     this.hudTime.textContent = formatted;
+
     this.sTime.textContent = formatted;
+    this.sEra.textContent = stats.currentEra;
+    this.sA.textContent = stats.scaleFactor.toFixed(3);
+    this.sHubble.textContent = stats.hubbleRate.toFixed(4);
+
     this.sTtarget.textContent = sim.targetTemperatureK.toFixed(0);
     this.sTmeas.textContent = stats.temperatureK.toFixed(1);
     this.sN.textContent = String(stats.count);
     this.sKE.textContent = stats.kineticEnergy.toFixed(1);
     this.sPE.textContent = stats.potentialEnergy.toFixed(1);
-    this.sFus.textContent = String(stats.fusionEvents);
     this.sBonds.textContent = String(stats.bondCount);
-    this.sBH.textContent = String(sim.effectors.length);
-    this.sStars.textContent = String(stats.starsFormed);
-    this.sA.textContent = stats.scaleFactor.toFixed(3);
+
+    this.sStars.textContent = String(stats.starsAlive);
+    this.sNS.textContent = String(stats.neutronStars);
+    this.sBH.textContent = String(stats.blackHoles);
+    this.sNeb.textContent = String(stats.nebulae);
+    this.sMStar.textContent = stats.totalStarMass.toFixed(0);
+    this.sMBH.textContent = stats.totalBHMass.toFixed(0);
+    this.sSfTotal.textContent = String(stats.starsFormed);
+
+    this.sZStars.textContent = stats.meanStellarMetallicity.toFixed(3);
+    this.sZ.textContent = stats.globalMetallicity.toFixed(3);
+
     this.sDM.textContent = stats.darkMass.toFixed(0);
     this.sBary.textContent = stats.baryonMass.toFixed(1);
+    this.sFus.textContent = String(stats.fusionEvents);
   }
 
   setDropHighlight(active: boolean): void {
@@ -239,7 +281,7 @@ export class Layout {
       const nameEl = row.children[2] as HTMLElement;
       const massEl = row.children[3] as HTMLElement;
       rankEl.textContent = `#${rank}`;
-      const color = eff.type === 'star' ? '#ffd28a' : '#9affb2';
+      const color = effectorSwatchColor(eff);
       dot.style.background = color;
       dot.style.boxShadow = `0 0 6px ${color}`;
       nameEl.textContent = eff.name || '';

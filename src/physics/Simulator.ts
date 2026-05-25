@@ -31,6 +31,20 @@ export interface SimStats {
   scaleFactor: number;
   darkMass: number;
   baryonMass: number;
+
+  // Live entity counts (for science-y stat panel)
+  starsAlive: number;
+  neutronStars: number;
+  blackHoles: number;
+  nebulae: number;
+  totalBHMass: number;
+  totalStarMass: number;
+
+  // Chemical / cosmological state
+  globalMetallicity: number;
+  meanStellarMetallicity: number;
+  hubbleRate: number;
+  currentEra: string;
 }
 
 export interface FusionEvent {
@@ -1048,6 +1062,7 @@ export class Simulator {
     const ke = this.kineticEnergy();
     const dof = Math.max(1, 3 * this.count);
     const tReduced = (2 * ke) / (dof * K_BOLTZMANN_REDUCED);
+
     let darkMass = 0;
     let baryonMass = 0;
     for (let i = 0; i < this.count; i++) {
@@ -1055,6 +1070,38 @@ export class Simulator {
       if (sp.name === 'DM') darkMass += sp.mass;
       else baryonMass += sp.mass;
     }
+
+    let starsAlive = 0;
+    let neutronStars = 0;
+    let blackHoles = 0;
+    let nebulae = 0;
+    let totalBHMass = 0;
+    let totalStarMass = 0;
+    let zSum = 0;
+    let zCount = 0;
+    for (const e of this.effectors) {
+      switch (e.type) {
+        case 'star':
+          starsAlive++;
+          totalStarMass += e.strength;
+          if (e.metallicity !== undefined) { zSum += e.metallicity; zCount++; }
+          break;
+        case 'neutron_star':
+          neutronStars++;
+          break;
+        case 'blackhole':
+          blackHoles++;
+          totalBHMass += e.strength;
+          break;
+        case 'nebula':
+          nebulae++;
+          break;
+      }
+    }
+
+    const currentEra = this.firedEvents.length > 0
+      ? this.firedEvents[this.firedEvents.length - 1].event.name
+      : '인플레이션 이전';
 
     return {
       count: this.count,
@@ -1069,6 +1116,18 @@ export class Simulator {
       scaleFactor: this.scaleFactor,
       darkMass,
       baryonMass,
+
+      starsAlive,
+      neutronStars,
+      blackHoles,
+      nebulae,
+      totalBHMass,
+      totalStarMass,
+
+      globalMetallicity: this.globalMetallicity,
+      meanStellarMetallicity: zCount > 0 ? zSum / zCount : 0,
+      hubbleRate: this.currentHubble(),
+      currentEra,
     };
   }
 }
