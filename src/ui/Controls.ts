@@ -195,7 +195,7 @@ export class Controls {
     // raw matter → sandbox tools/extras.
     const groups: Group[] = [
       {
-        folderName: '🌌 우주 구조',
+        folderName: '우주 구조',
         entries: [
           { key: 'galaxies', label: '은하 헤일로' },
           { key: 'nebulae',  label: '성운' },
@@ -203,7 +203,7 @@ export class Controls {
         ],
       },
       {
-        folderName: '✨ 천체',
+        folderName: '천체',
         entries: [
           { key: 'stars',         label: '별' },
           { key: 'neutronStars',  label: '중성자별' },
@@ -211,14 +211,14 @@ export class Controls {
         ],
       },
       {
-        folderName: '🧬 물질',
+        folderName: '물질',
         entries: [
           { key: 'particles', label: '입자' },
           { key: 'bonds',     label: '결합' },
         ],
       },
       {
-        folderName: '🛠 도구 · 분석',
+        folderName: '도구 · 분석',
         entries: [
           { key: 'orbits',    label: '공전 궤도' },
           { key: 'repulsors', label: '반발자' },
