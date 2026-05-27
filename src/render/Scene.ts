@@ -617,6 +617,20 @@ export class Scene {
   private readonly tmpSphere = new THREE.Sphere();
   private readonly tmpL = new THREE.Vector3();
   private readonly tmpUp = new THREE.Vector3(0, 1, 0);
+  // Reused per-frame scratch buffers — avoid GC churn in the 60Hz sync path.
+  private readonly speciesCountsScratch: Int32Array = new Int32Array(SPECIES.length);
+  private readonly aliveEffectorScratch: Set<Effector> = new Set<Effector>();
+  private galaxyParentScratch: Int32Array | null = null;
+  // Galaxy clustering is O(n²) on the star list — we throttle it to ~5Hz.
+  // Halos are diffuse; a 200ms lag in their position/scale is imperceptible.
+  private galaxyAccum = 0;
+  private readonly galaxyInterval = 0.2;
+  // Orbit Kepler solve and computeLineDistances are also expensive when the
+  // selected body's orbit is large. Recompute the ellipse at ~10Hz; the
+  // dashed connector line gets re-measured only when the host or selection
+  // moved meaningfully (tracked below).
+  private orbitAccum = 0;
+  private readonly orbitInterval = 1 / 12;
 
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
@@ -629,12 +643,29 @@ export class Scene {
 
     this.syncBonds(sim);
     this.syncEffectors(sim, frameDt);
-    this.syncOrbits(sim);
+    this.orbitAccum += frameDt;
+    if (this.orbitAccum >= this.orbitInterval || this.selectedEffector !== this.trailLastEffector) {
+      this.orbitAccum = 0;
+      this.syncOrbits(sim);
+    }
     this.recordTrail(frameDt);
-    this.syncGalaxies(sim);
+    this.galaxyAccum += frameDt;
+    if (this.galaxyAccum >= this.galaxyInterval) {
+      this.galaxyAccum = 0;
+      this.syncGalaxies(sim);
+    } else {
+      // Cheap per-frame frustum-visibility refresh on the cached halos so
+      // they pop in/out as the camera turns, without re-running clustering.
+      for (const entry of this.galaxyHalos.values()) {
+        this.tmpSphere.center.copy(entry.mesh.position);
+        this.tmpSphere.radius = Math.max(entry.mesh.scale.x, entry.mesh.scale.y, entry.mesh.scale.z);
+        entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
+      }
+    }
 
     if (this.renderMode === 'solid') {
-      const counts = new Int32Array(SPECIES.length);
+      const counts = this.speciesCountsScratch;
+      counts.fill(0);
       for (let i = 0; i < n; i++) {
         const s = sim.species[i];
         const px = sim.positions[i * 3 + 0];
@@ -684,9 +715,16 @@ export class Scene {
         write++;
       }
       this.gasGeom.setDrawRange(0, write);
-      (this.gasGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-      (this.gasGeom.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
-      (this.gasGeom.getAttribute('size') as THREE.BufferAttribute).needsUpdate = true;
+      // Only upload the slice that was actually written. updateRange tells
+      // three.js to skip the rest of the (possibly large) attribute buffer.
+      if (write > 0) {
+        const pos = this.gasGeom.getAttribute('position') as THREE.BufferAttribute;
+        const col = this.gasGeom.getAttribute('color') as THREE.BufferAttribute;
+        const sz  = this.gasGeom.getAttribute('size')  as THREE.BufferAttribute;
+        pos.clearUpdateRanges(); pos.addUpdateRange(0, write * 3); pos.needsUpdate = true;
+        col.clearUpdateRanges(); col.addUpdateRange(0, write * 3); col.needsUpdate = true;
+        sz.clearUpdateRanges();  sz.addUpdateRange(0, write);      sz.needsUpdate  = true;
+      }
     }
   }
 
@@ -821,7 +859,11 @@ export class Scene {
 
     if (stars.length >= this.galaxyMinStars) {
       const n = stars.length;
-      const parent = new Int32Array(n);
+      if (!this.galaxyParentScratch || this.galaxyParentScratch.length < n) {
+        // Grow with headroom so we don't realloc on every minor star count bump.
+        this.galaxyParentScratch = new Int32Array(Math.max(n * 2, 32));
+      }
+      const parent = this.galaxyParentScratch;
       for (let i = 0; i < n; i++) parent[i] = i;
       const find = (x: number): number => {
         while (parent[x] !== x) {
@@ -1205,7 +1247,9 @@ export class Scene {
 
   private syncEffectors(sim: Simulator, frameDt: number): void {
     this.effectorClock += frameDt;
-    const alive = new Set(sim.effectors);
+    const alive = this.aliveEffectorScratch;
+    alive.clear();
+    for (const eff of sim.effectors) alive.add(eff);
     for (const [eff, view] of this.effectorViews) {
       if (!alive.has(eff)) {
         this.scene.remove(view.group);
@@ -1839,6 +1883,45 @@ export class Scene {
     }
     if (this.skyGroup) this.skyGroup.position.copy(this.camera.position);
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // --- Adaptive DPR ---------------------------------------------------------
+  // High-DPI displays (Retina/4K) often render at 4× the pixel count of the
+  // canvas size, which is the single most expensive thing in fill-rate-bound
+  // scenes. We start at the device DPR (capped at 2), then ratchet down when
+  // FPS sags and back up when it recovers. The user feels smoother frames in
+  // exchange for slightly softer rendering until they stop moving.
+  private readonly basePixelRatio = Math.min(window.devicePixelRatio, 2);
+  private currentPixelRatio = Math.min(window.devicePixelRatio, 2);
+  private dprDownAccum = 0;
+  private dprUpAccum = 0;
+  /** Called once per second-ish with the rolling FPS measurement. */
+  adaptPixelRatio(fps: number, dt: number): void {
+    // Only react after we've taken a real measurement. fps=0 in the first
+    // few frames would otherwise stampede us down to the floor.
+    if (fps <= 1) return;
+    if (fps < 45) {
+      this.dprDownAccum += dt;
+      this.dprUpAccum = 0;
+      if (this.dprDownAccum > 0.6 && this.currentPixelRatio > 0.6) {
+        const next = Math.max(0.6, this.currentPixelRatio - 0.25);
+        this.currentPixelRatio = next;
+        this.renderer.setPixelRatio(next);
+        this.dprDownAccum = 0;
+      }
+    } else if (fps > 58 && this.currentPixelRatio < this.basePixelRatio) {
+      this.dprUpAccum += dt;
+      this.dprDownAccum = 0;
+      if (this.dprUpAccum > 2.5) {
+        const next = Math.min(this.basePixelRatio, this.currentPixelRatio + 0.25);
+        this.currentPixelRatio = next;
+        this.renderer.setPixelRatio(next);
+        this.dprUpAccum = 0;
+      }
+    } else {
+      this.dprDownAccum *= 0.5;
+      this.dprUpAccum *= 0.5;
+    }
   }
 
   private onResize(container: HTMLElement): void {

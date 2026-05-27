@@ -387,9 +387,10 @@ function spectralLabel(mass: number): string {
   return            'O (청색 거성)';
 }
 
+const _reticleForward = new THREE.Vector3();
+
 function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | null {
-  const forward = new THREE.Vector3();
-  camera.getWorldDirection(forward);
+  const forward = camera.getWorldDirection(_reticleForward);
   const origin = camera.position;
   let best: ReticleTarget | null = null;
   let bestScore = -Infinity;
@@ -565,6 +566,8 @@ function loop(): void {
     frames = 0;
     fpsTimer = 0;
     layout.updateStats(sim, fps);
+    // Let the renderer ratchet pixelRatio up/down based on rolling FPS.
+    scene.adaptPixelRatio(fps, 0.25);
   }
 
   requestAnimationFrame(loop);
