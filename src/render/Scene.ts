@@ -37,8 +37,18 @@ export class Scene {
   readonly controls: OrbitControls;
 
   private readonly boxHalf: number;
+  // High-LOD particle meshes (icosa detail=2, 320 tri) — used for particles
+  // whose projected pixel size exceeds the LOD threshold. Distant particles
+  // are routed to speciesMeshesLo (detail=0, 20 tri) instead, dropping ~16x
+  // the triangle work for tiny dots that wouldn't show subdivision anyway.
   private readonly speciesMeshes: THREE.InstancedMesh[] = [];
+  private readonly speciesMeshesLo: THREE.InstancedMesh[] = [];
   private readonly speciesCapacity: number[];
+  private readonly speciesCountsLoScratch: Int32Array = new Int32Array(SPECIES.length);
+  // Projection scale (= canvasH / (2 * tan(fovY/2))) cached for the
+  // solid-mode LOD pick. pixelSize ≈ radius * projScaleY / dist.
+  // Refreshed by onResize / constructor.
+  private projScaleY = 1;
   private readonly tmpMat = new THREE.Matrix4();
   private boxMesh: THREE.LineSegments | null = null;
   private gridMesh: THREE.GridHelper | null = null;
@@ -116,7 +126,11 @@ export class Scene {
     this.camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, boxHalf * 80);
     this.camera.position.set(boxHalf * 1.6, boxHalf * 1.1, boxHalf * 1.6);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // antialias 비용은 fragment fill 의 25~40% 추가. Retina/4K (DPR≥1.5)
+    // 에서는 pixel density 가 충분해서 AA 없이도 깨끗하게 보이므로 자동 off.
+    // 저해상도 디스플레이에서만 MSAA 활성화.
+    const wantAA = window.devicePixelRatio < 1.5;
+    this.renderer = new THREE.WebGLRenderer({ antialias: wantAA, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
@@ -136,6 +150,8 @@ export class Scene {
 
     const ro = new ResizeObserver(() => this.onResize(container));
     ro.observe(container);
+    // Initialize projScaleY / canvasH for LOD before the first frame runs.
+    this.onResize(container);
   }
 
   private buildStarfield(): void {
@@ -288,6 +304,7 @@ export class Scene {
     switch (group) {
       case 'particles':
         for (const m of this.speciesMeshes) m.visible = visible && this.renderMode === 'solid';
+        for (const m of this.speciesMeshesLo) m.visible = visible && this.renderMode === 'solid';
         if (this.gasPoints) this.gasPoints.visible = visible && this.renderMode === 'gas';
         if (this.gasHaloPoints) this.gasHaloPoints.visible = visible && this.renderMode === 'gas';
         break;
@@ -589,6 +606,7 @@ export class Scene {
     const useSolid = mode === 'solid';
     const show = this.visibility.particles;
     for (const m of this.speciesMeshes) m.visible = show && useSolid;
+    for (const m of this.speciesMeshesLo) m.visible = show && useSolid;
     if (this.gasPoints) this.gasPoints.visible = show && !useSolid;
     if (this.gasHaloPoints) this.gasHaloPoints.visible = show && !useSolid;
   }
@@ -599,16 +617,31 @@ export class Scene {
   }
 
   private buildParticleMeshes(): void {
-    const sphereGeo = new THREE.IcosahedronGeometry(1, 2);
+    // High LOD: detail=2 = 320 triangles per sphere. Looks correctly round
+    // for particles big enough to occupy >8 screen pixels.
+    const sphereGeoHi = new THREE.IcosahedronGeometry(1, 2);
+    // Low LOD: detail=0 = 20 triangles. Indistinguishable from the hi-LOD
+    // mesh once a particle shrinks under ~6px on screen, but renders 16x
+    // cheaper. Materially the same per-instance setMatrixAt cost, so the
+    // CPU side stays flat.
+    const sphereGeoLo = new THREE.IcosahedronGeometry(1, 0);
     for (let i = 0; i < SPECIES.length; i++) {
       const species = SPECIES[i];
-      const mat = new THREE.MeshBasicMaterial({ color: species.color });
-      const mesh = new THREE.InstancedMesh(sphereGeo, mat, this.speciesCapacity[i]);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.count = 0;
-      mesh.frustumCulled = false;
-      this.scene.add(mesh);
-      this.speciesMeshes.push(mesh);
+      const matHi = new THREE.MeshBasicMaterial({ color: species.color });
+      const meshHi = new THREE.InstancedMesh(sphereGeoHi, matHi, this.speciesCapacity[i]);
+      meshHi.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      meshHi.count = 0;
+      meshHi.frustumCulled = false;
+      this.scene.add(meshHi);
+      this.speciesMeshes.push(meshHi);
+
+      const matLo = new THREE.MeshBasicMaterial({ color: species.color });
+      const meshLo = new THREE.InstancedMesh(sphereGeoLo, matLo, this.speciesCapacity[i]);
+      meshLo.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      meshLo.count = 0;
+      meshLo.frustumCulled = false;
+      this.scene.add(meshLo);
+      this.speciesMeshesLo.push(meshLo);
     }
   }
 
@@ -665,7 +698,18 @@ export class Scene {
 
     if (this.renderMode === 'solid') {
       const counts = this.speciesCountsScratch;
+      const countsLo = this.speciesCountsLoScratch;
       counts.fill(0);
+      countsLo.fill(0);
+      // pixelSize ≈ radius * projScaleY / dist. Threshold of 6px is the
+      // empirically-found knee where icosa subdivision stops being visible
+      // on a typical desktop monitor at default DPR. Squared for cheap
+      // comparison: (radius * projScaleY) ² < THRESH² * dist².
+      const lodPixelThresh = 6.0;
+      const lodCoef = this.projScaleY / lodPixelThresh;
+      const camX = this.camera.position.x;
+      const camY = this.camera.position.y;
+      const camZ = this.camera.position.z;
       for (let i = 0; i < n; i++) {
         const s = sim.species[i];
         const px = sim.positions[i * 3 + 0];
@@ -675,15 +719,24 @@ export class Scene {
         this.tmpSphere.center.set(px, py, pz);
         this.tmpSphere.radius = radius;
         if (!this.tmpFrustum.intersectsSphere(this.tmpSphere)) continue;
-        const slot = counts[s]++;
+        // LOD pick: hi if (radius * lodCoef) > dist, else lo.
+        const dx = px - camX, dy = py - camY, dz = pz - camZ;
+        const dist2 = dx * dx + dy * dy + dz * dz;
+        const cutoff = radius * lodCoef;
+        const useHi = cutoff * cutoff > dist2;
+        const targetMesh = useHi ? this.speciesMeshes[s] : this.speciesMeshesLo[s];
+        const targetCounts = useHi ? counts : countsLo;
+        const slot = targetCounts[s]++;
         if (slot >= this.speciesCapacity[s]) continue;
         this.tmpMat.makeScale(radius, radius, radius);
         this.tmpMat.setPosition(px, py, pz);
-        this.speciesMeshes[s].setMatrixAt(slot, this.tmpMat);
+        targetMesh.setMatrixAt(slot, this.tmpMat);
       }
       for (let s = 0; s < SPECIES.length; s++) {
         this.speciesMeshes[s].count = counts[s];
-        this.speciesMeshes[s].instanceMatrix.needsUpdate = true;
+        if (counts[s] > 0) this.speciesMeshes[s].instanceMatrix.needsUpdate = true;
+        this.speciesMeshesLo[s].count = countsLo[s];
+        if (countsLo[s] > 0) this.speciesMeshesLo[s].instanceMatrix.needsUpdate = true;
       }
     } else if (this.gasGeom && this.gasPositions && this.gasColors && this.gasSizes) {
       let write = 0;
@@ -1937,5 +1990,9 @@ export class Scene {
     if (this.gasHaloPoints) {
       (this.gasHaloPoints.material as THREE.ShaderMaterial).uniforms.uPixelScale.value = pixelScale;
     }
+    // Half-height of the canvas in pixels, divided by tan(fovY/2) — the
+    // projection scale used in solid-mode LOD: pixel_radius ≈ radius * projScaleY / dist.
+    const fovYRad = this.camera.fov * Math.PI / 180;
+    this.projScaleY = (h * 0.5) / Math.tan(fovYRad * 0.5);
   }
 }

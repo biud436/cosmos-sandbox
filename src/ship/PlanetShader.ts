@@ -72,11 +72,6 @@ const NOISE_GLSL = /* glsl */`
     for (int i = 0; i < 4; i++) { f += a * snoise(p); p *= 2.0; a *= 0.5; }
     return f;
   }
-  float fbm5(vec3 p) {
-    float f = 0.0, a = 0.5;
-    for (int i = 0; i < 5; i++) { f += a * snoise(p); p *= 2.0; a *= 0.5; }
-    return f;
-  }
   float ridge(vec3 p) { return 1.0 - abs(fbm(p)); }
   // Domain warp: feed an fbm vector back into position. Breaks the gridded
   // look of plain fbm and gives continents/dunes a more organic flow.
@@ -106,7 +101,7 @@ function classGLSL(cls: PlanetClass): string {
       }
       vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
         vec3 wp = warp(p * 1.4);
-        float h = fbm5(wp * 2.0) * 0.5 + 0.5;
+        float h = fbm(wp * 2.0) * 0.5 + 0.5;
         float craters = ridge(p * 14.0);
         float band = smoothstep(0.35, 0.62, h);
         vec3 col = mix(c2 * 0.65, base, band);
@@ -132,7 +127,7 @@ function classGLSL(cls: PlanetClass): string {
         vec3 wp = warp(p * 1.1);
         float lat = n.y;
         float dunes = sin(lat * 14.0 + fbm(wp * 2.0) * 3.5);
-        float coarse = fbm5(wp * 4.0);
+        float coarse = fbm(wp * 4.0);
         float band = smoothstep(-0.3, 0.6, dunes + coarse * 0.4);
         vec3 col = mix(c2, base, band);
         col = mix(col, c3, smoothstep(0.6, 1.0, coarse));
@@ -155,7 +150,7 @@ function classGLSL(cls: PlanetClass): string {
       }
       vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
         vec3 wp = warp(p * 1.3);
-        float h = fbm5(wp * 2.5);
+        float h = fbm(wp * 2.5);
         float coast = smoothstep(0.0, 0.04, h);
         vec3 deep = c2 * 0.7;
         vec3 shallow = mix(c2, base, 0.35);
@@ -172,7 +167,7 @@ function classGLSL(cls: PlanetClass): string {
       }
       float roughnessFn(vec3 n, vec3 p) {
         vec3 wp = warp(p * 1.3);
-        float h = fbm5(wp * 2.5);
+        float h = fbm(wp * 2.5);
         float landMask = smoothstep(0.0, 0.04, h);
         // Polar caps are matte ice too
         float caps = smoothstep(0.74, 0.90, abs(n.y));
@@ -190,7 +185,7 @@ function classGLSL(cls: PlanetClass): string {
         vec3 wp = warp(p * 1.4);
         float nv = fbm(wp * 6.0);
         float cracks = smoothstep(0.04, 0.0, abs(nv));
-        float h = fbm5(wp * 2.0) * 0.5 + 0.5;
+        float h = fbm(wp * 2.0) * 0.5 + 0.5;
         vec3 col = mix(base, c2, smoothstep(0.45, 0.7, h));
         col = mix(col, c3 * 0.55, cracks);
         return col;
@@ -209,7 +204,7 @@ function classGLSL(cls: PlanetClass): string {
       vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
         vec3 wp = warp(p * 1.5 + vec3(t * 0.02, 0.0, 0.0));
         float lat = n.y;
-        float turb = fbm5(wp * 2.5 + vec3(t * 0.04, 0.0, 0.0));
+        float turb = fbm(wp * 2.5 + vec3(t * 0.04, 0.0, 0.0));
         float bands = sin(lat * 9.0 + turb * 2.4);
         float storm = smoothstep(0.62, 0.95, fbm(wp * 4.0 + vec3(0.0, t * 0.01, 0.0)));
         vec3 col = mix(base, c2, smoothstep(-0.2, 0.4, bands));
@@ -227,7 +222,7 @@ function classGLSL(cls: PlanetClass): string {
         return fbm(p * 4.0) * 0.45 + fbm(p * 12.0) * 0.15;
       }
       vec3 procColor(vec3 n, vec3 p, vec3 base, vec3 c2, vec3 c3, float t) {
-        float nv = fbm5(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
+        float nv = fbm(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
         float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
         vec3 dark = c2 * 0.40;
         vec3 col = mix(dark, base * 0.85, smoothstep(-0.5, 0.4, nv));
@@ -236,13 +231,13 @@ function classGLSL(cls: PlanetClass): string {
         return col;
       }
       float roughnessFn(vec3 n, vec3 p) {
-        float nv = fbm5(p * 5.0);
+        float nv = fbm(p * 5.0);
         float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
         // Magma is glossy hot, basalt is rough. Pulls roughness down where hot.
         return mix(0.72, 0.20, hot);
       }
       float emissionFn(vec3 n, vec3 p, float t) {
-        float nv = fbm5(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
+        float nv = fbm(p * 5.0 + vec3(0.0, t * 0.03, 0.0));
         float hot = pow(smoothstep(0.15, -0.35, -nv), 3.0);
         return hot * (0.85 + 0.20 * sin(t * 1.5));
       }
@@ -359,10 +354,12 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
         ${NOISE_GLSL}
         ${surface}
       `)
-      // 1. Diffuse color from procedural surface.
+      // 1. Diffuse color from procedural surface. Gated at uDetail > 0.08:
+      //    below that, the proc overlay blends in at <8% weight which is
+      //    imperceptible, so we skip the full noise stack entirely.
       .replace('#include <map_fragment>', /* glsl */`
         #include <map_fragment>
-        if (uDetail > 0.001) {
+        if (uDetail > 0.08) {
           vec3 base = diffuseColor.rgb;
           vec3 n0 = normalize(vLocalDir);
           vec3 pp = n0 + uSeed * 100.0;
@@ -370,25 +367,30 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
           diffuseColor.rgb = mix(base, proc, uDetail);
         }
       `)
-      // 2. Normal perturbation from height field's analytic gradient.
-      //    Works without a tangent frame because the geometric normal on a
-      //    unit sphere IS the local position — we synthesize a bumped normal
-      //    in object space by projecting the height gradient onto the tangent
-      //    plane, then transform to view space with normalMatrix.
+      // 2. Normal perturbation from height field. Gated harder than color
+      //    (0.18) because bump is the most expensive hook — it samples
+      //    heightFn 3 times per fragment, and the visual benefit fades fast
+      //    once the planet's silhouette is small. Tangent-plane gradient
+      //    (3 samples) instead of full 3D (4 samples) — same result because
+      //    the radial component would be projected out anyway.
       .replace('#include <normal_fragment_maps>', /* glsl */`
         #include <normal_fragment_maps>
-        if (uDetail > 0.001 && uBump > 0.0) {
+        if (uDetail > 0.18 && uBump > 0.0) {
           const float eps = 0.015;
           vec3 n0 = normalize(vLocalDir);
           vec3 pp = n0 + uSeed * 100.0;
+          // Build an orthonormal tangent frame on the unit sphere. Pick the
+          // less-aligned cardinal axis to cross with n0 so we never get a
+          // degenerate frame at the poles.
+          vec3 helper = abs(n0.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+          vec3 tang = normalize(cross(helper, n0));
+          vec3 bitg = cross(n0, tang);
           float h0 = heightFn(pp);
-          float hx = heightFn(pp + vec3(eps, 0.0, 0.0));
-          float hy = heightFn(pp + vec3(0.0, eps, 0.0));
-          float hz = heightFn(pp + vec3(0.0, 0.0, eps));
-          vec3 grad = (vec3(hx, hy, hz) - h0) / eps;
-          // Project gradient onto tangent plane so the perturbation stays
-          // tangential — moving the normal off the sphere is meaningless.
-          grad -= n0 * dot(grad, n0);
+          float ht = heightFn(pp + tang * eps);
+          float hb = heightFn(pp + bitg * eps);
+          // Tangent-plane gradient — already lies in the tangent plane, no
+          // projection needed.
+          vec3 grad = (tang * (ht - h0) + bitg * (hb - h0)) / eps;
           vec3 nLocal = normalize(n0 - grad * uBump);
           vec3 nView = normalize(normalMatrix * nLocal);
           // Ramp the perturbation with detail so distant planets keep the
@@ -396,10 +398,11 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
           normal = normalize(mix(normal, nView, uDetail));
         }
       `)
-      // 3. Per-pixel roughness modulation.
+      // 3. Per-pixel roughness modulation. Cheap relative to bump but still
+      //    not free — gate at the same color threshold.
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         #include <roughnessmap_fragment>
-        if (uDetail > 0.001) {
+        if (uDetail > 0.08) {
           vec3 n0 = normalize(vLocalDir);
           vec3 pp = n0 + uSeed * 100.0;
           float rr = roughnessFn(n0, pp);
@@ -421,7 +424,7 @@ export function createPlanetMaterial(planet: Planet): PlanetMaterialHandle {
       // the planet's color identity intact while ensuring it's always seen.
       .replace('#include <emissivemap_fragment>', /* glsl */`
         #include <emissivemap_fragment>
-        if (uDetail > 0.001) {
+        if (uDetail > 0.08) {
           vec3 n0 = normalize(vLocalDir);
           vec3 pp = n0 + uSeed * 100.0;
           float e = emissionFn(n0, pp, uTime);
