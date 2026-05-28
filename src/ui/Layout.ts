@@ -29,6 +29,7 @@ export class Layout {
   private readonly btnReset = document.getElementById('btn-reset') as HTMLButtonElement;
   private readonly btnShip = document.getElementById('btn-ship') as HTMLButtonElement;
   private readonly timeScaleSelect = document.getElementById('time-scale') as HTMLSelectElement;
+  private readonly gfxQualitySelect = document.getElementById('gfx-quality') as HTMLSelectElement;
   private readonly eventLog = document.getElementById('event-log')!;
 
   private readonly hudFps = document.getElementById('hud-fps')!;
@@ -155,11 +156,16 @@ export class Layout {
     presets: string[];
     initialPreset: string;
     initialTimeScale: number;
+    /** Graphics-quality dropdown options. The keys are the preset ids
+     *  (passed back to onGfxQuality); the labels are what the player sees. */
+    gfxQualityOptions: { id: string; label: string }[];
+    initialGfxQuality: string;
     onPreset: (name: string) => void;
     onPauseToggle: () => boolean;
     onStep: () => void;
     onReset: () => void;
     onTimeScale: (scale: number) => void;
+    onGfxQuality: (id: string) => void;
     onToggleOrbits?: () => void;
     onToggleShip?: () => boolean;
   }): void {
@@ -178,6 +184,20 @@ export class Layout {
       const v = parseFloat(this.timeScaleSelect.value);
       opts.onTimeScale(v);
       this.sScale.textContent = `×${v}`;
+    });
+
+    // Graphics-quality dropdown. Populated from the caller — we don't import
+    // GraphicsSettings here to keep the Layout file UI-only.
+    this.gfxQualitySelect.innerHTML = '';
+    for (const { id, label } of opts.gfxQualityOptions) {
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = label;
+      if (id === opts.initialGfxQuality) o.selected = true;
+      this.gfxQualitySelect.appendChild(o);
+    }
+    this.gfxQualitySelect.addEventListener('change', () => {
+      opts.onGfxQuality(this.gfxQualitySelect.value);
     });
 
     this.btnPause.addEventListener('click', () => {

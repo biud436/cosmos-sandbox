@@ -1,6 +1,7 @@
 // Effector physics (gravity, collisions, mergers, type-dispatched application
 // of forces on particles) split out of Simulator.ts.
 import type { Effector, Simulator } from './Simulator';
+import { effectiveTemperature, luminosity } from './stellarPhysics';
 import { SPECIES } from './types';
 import { ejectSupernovaParticles } from './starFormation';
 
@@ -251,6 +252,9 @@ function mergeStars(sim: Simulator, a: Effector, b: Effector): boolean {
   a.radius = Math.cbrt(a.radius ** 3 + b.radius ** 3);
   // Refresh born-at so the merged giant gets a fresh lifetime budget
   a.bornAt = sim.simTime;
+  // Recompute the spectrum — a 60 M-unit merger is no longer a G-type sun.
+  a.temperatureK = effectiveTemperature(a.strength);
+  a.luminositySolar = luminosity(a.strength);
   sim.evStellarMerger++;
   sim.onStellarMerger?.([mx, my, mz], total);
   return false;

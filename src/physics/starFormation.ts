@@ -1,6 +1,7 @@
 // Star-formation lifecycle split out of Simulator.ts: cluster detection,
 // IMF-sampled spawn, stellar lifetimes, supernova ejecta, galaxy seeding.
 import type { Effector, Simulator } from './Simulator';
+import { effectiveTemperature, luminosity } from './stellarPhysics';
 import { SPECIES } from './types';
 
 export function countDMNear(sim: Simulator, x: number, y: number, z: number, r2: number): number {
@@ -274,6 +275,11 @@ export function spawnStarFromCluster(sim: Simulator, indices: number[]): Effecto
   }
   eff.strength = Math.min(320, Math.max(6, baseMass * imfBoost));
   eff.radius = Math.min(3.2, Math.max(0.7, Math.cbrt(eff.strength / 30) * 0.95));
+
+  // Recompute the spectrum now that strength reflects the IMF draw — the
+  // values addEffector seeded were for the placeholder 30 M-unit preset.
+  eff.temperatureK = effectiveTemperature(eff.strength);
+  eff.luminositySolar = luminosity(eff.strength);
 
   // Inherit the ISM metallicity at the moment of birth. Stars born from
   // pristine gas (early universe) get Z≈0; stars born after many SNe get Z↑.

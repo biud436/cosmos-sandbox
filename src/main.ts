@@ -1,8 +1,10 @@
 import { Effector, Simulator } from './physics/Simulator';
+import { spectralClassFromT } from './physics/stellarPhysics';
+import { loadSavedPreset, QualityPreset, QUALITY_LABELS, savePreset, settingsOf } from './render/GraphicsSettings';
 import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
-import { generatePlanetSystem, planetClassLabel } from './ship/PlanetSystem';
+import { generatePlanetSystem, planetClassLabel, planetPosition } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
 import { ShipHUD, formatRealDistance } from './ship/ShipHUD';
 import { ShipMenu } from './ship/ShipMenu';
@@ -23,7 +25,8 @@ const viewport = document.getElementById('viewport');
 if (!viewport) throw new Error('#viewport not found');
 
 const sim = new Simulator({ boxHalf: BOX_HALF, maxParticles: MAX_PARTICLES, cutoff: CUTOFF });
-const scene = new Scene(viewport, BOX_HALF, MAX_PER_SPECIES);
+let currentGfxPreset: QualityPreset = loadSavedPreset();
+const scene = new Scene(viewport, BOX_HALF, MAX_PER_SPECIES, settingsOf(currentGfxPreset));
 const layout = new Layout();
 
 let lastFusionLog = 0;
@@ -106,7 +109,7 @@ function ensureSystemFor(eff: Effector): StarSystemView | null {
   if (!view) {
     const data = generatePlanetSystem(eff);
     if (!data) return null;
-    view = new StarSystemView(data, eff);
+    view = new StarSystemView(data, eff, scene.graphicsSettings);
     scene.scene.add(view.group);
     starSystems.set(eff.id, view);
     dex.recordPlanets(data, sim.simTime);
@@ -170,16 +173,13 @@ shipMenu.bind(dex, {
     if (!view) return;
     view.group.visible = true;
     view.update(shipProperTime);
-    // Derive the planet's current orbital position from metadata so we
-    // don't depend on the renderer's child-ordering convention.
+    // Derive the planet's current orbital position from Kepler dynamics so
+    // we don't depend on the renderer's child-ordering convention.
     const planet = view.planetSystem.planets[entry.planetIndex];
     if (!planet) return;
-    const angle = planet.phase0 + (shipProperTime / planet.periodSec) * Math.PI * 2;
-    const sinI = Math.sin(planet.inclination);
-    const cosI = Math.cos(planet.inclination);
-    const x = Math.cos(angle) * planet.orbitRadius;
-    const z = Math.sin(angle) * planet.orbitRadius;
-    const target = new THREE.Vector3(eff.x + x, eff.y + z * sinI, eff.z + z * cosI);
+    const rel: [number, number, number] = [0, 0, 0];
+    planetPosition(planet, shipProperTime, rel);
+    const target = new THREE.Vector3(eff.x + rel[0], eff.y + rel[1], eff.z + rel[2]);
     flyTo(target, Math.max(planet.visualRadius * 5, 1.5), entry.planetName);
   },
   onExitShipMode: () => setShipMode(false),
@@ -246,6 +246,11 @@ layout.bindToolbar({
   presets: PRESETS.map((p) => p.name),
   initialPreset: controls.state.preset,
   initialTimeScale: controls.state.timeScale,
+  gfxQualityOptions: (Object.keys(QUALITY_LABELS) as QualityPreset[]).map((id) => ({
+    id,
+    label: QUALITY_LABELS[id],
+  })),
+  initialGfxQuality: currentGfxPreset,
   onPreset: (name) => {
     controls.applyPresetByName(name);
     layout.log(`Preset → ${name}`);
@@ -264,6 +269,20 @@ layout.bindToolbar({
     controls.setTimeScale(scale);
     modeManager.timeScale = scale;
     layout.log(`Time scale → ×${scale}`);
+  },
+  onGfxQuality: (id) => {
+    const next = id as QualityPreset;
+    const aaChanged = scene.applyGraphicsSettings(settingsOf(next));
+    currentGfxPreset = next;
+    savePreset(next);
+    layout.log(`그래픽 퀄리티 → ${QUALITY_LABELS[next]}`, 'event');
+    if (aaChanged) {
+      layout.log('AA 설정은 새로고침 후에 반영됩니다.', 'info');
+    }
+    // Invalidate any already-materialized star systems so the next visit
+    // builds meshes at the new sphere resolution. LRU.clear() calls each
+    // entry's onEvict (= view.dispose()) before clearing the map.
+    starSystems.clear();
   },
   onToggleOrbits: () => {
     const next = !scene.isVisible('orbits');
@@ -378,7 +397,11 @@ function starTypeLabel(type: string): string {
   }
 }
 
-function spectralLabel(mass: number): string {
+function spectralLabel(eff: Effector): string {
+  // Prefer the cached temperature (real M-T relation); fall back to a mass
+  // bin if it's missing (e.g. legacy effectors from before T was tracked).
+  if (eff.temperatureK !== undefined) return spectralClassFromT(eff.temperatureK).label;
+  const mass = eff.strength;
   if (mass < 12)  return 'M (적색 왜성)';
   if (mass < 22)  return 'K (주황)';
   if (mass < 40)  return 'G (태양형)';
@@ -406,19 +429,16 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
   };
 
   // Planets in materialized systems
+  const planetRel: [number, number, number] = [0, 0, 0];
   for (const view of starSystems.values()) {
     if (!view.group.visible) continue;
     const center = view.group.position;
     for (let i = 0; i < view.planetSystem.planets.length; i++) {
       const planet = view.planetSystem.planets[i];
-      const angle = planet.phase0 + (shipProperTime / planet.periodSec) * Math.PI * 2;
-      const sinI = Math.sin(planet.inclination);
-      const cosI = Math.cos(planet.inclination);
-      const lx = Math.cos(angle) * planet.orbitRadius;
-      const lz = Math.sin(angle) * planet.orbitRadius;
-      const px = center.x + lx;
-      const py = center.y + lz * sinI;
-      const pz = center.z + lz * cosI;
+      planetPosition(planet, shipProperTime, planetRel);
+      const px = center.x + planetRel[0];
+      const py = center.y + planetRel[1];
+      const pz = center.z + planetRel[2];
       const dx = px - origin.x, dy = py - origin.y, dz = pz - origin.z;
       const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
       if (d < 0.001) continue;
@@ -433,12 +453,9 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
           label: planet.name,
           getPosition: () => {
             const c = sysCenter.group.position;
-            const a = planet.phase0 + (shipProperTime / planet.periodSec) * Math.PI * 2;
-            const sI = Math.sin(planet.inclination);
-            const cI = Math.cos(planet.inclination);
-            const x = Math.cos(a) * planet.orbitRadius;
-            const z = Math.sin(a) * planet.orbitRadius;
-            return new THREE.Vector3(c.x + x, c.y + z * sI, c.z + z * cI);
+            const rel: [number, number, number] = [0, 0, 0];
+            planetPosition(planet, shipProperTime, rel);
+            return new THREE.Vector3(c.x + rel[0], c.y + rel[1], c.z + rel[2]);
           },
           radius: planet.visualRadius,
           color: planet.color,
@@ -471,7 +488,17 @@ function pickReticleTarget(camera: THREE.PerspectiveCamera): ReticleTarget | nul
         { k: '질량', v: `${captured.strength.toFixed(0)}` },
       ];
       if (captured.type === 'star') {
-        details.push({ k: '분광형', v: spectralLabel(captured.strength) });
+        details.push({ k: '분광형', v: spectralLabel(captured) });
+        if (captured.temperatureK !== undefined) {
+          details.push({ k: '표면온도', v: `${Math.round(captured.temperatureK).toLocaleString()} K` });
+        }
+        if (captured.luminositySolar !== undefined) {
+          const L = captured.luminositySolar;
+          const lLabel = L >= 100 ? `${L.toFixed(0)} L⊙`
+                       : L >= 1   ? `${L.toFixed(1)} L⊙`
+                                  : `${L.toFixed(3)} L⊙`;
+          details.push({ k: '광도', v: lLabel });
+        }
         if (captured.metallicity !== undefined) {
           details.push({ k: '금속성', v: `Z=${captured.metallicity.toFixed(3)}` });
         }

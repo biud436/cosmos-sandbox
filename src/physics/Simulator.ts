@@ -1,5 +1,6 @@
 import { BarnesHut } from './BarnesHut';
 import { SpatialGrid } from './SpatialGrid';
+import { effectiveTemperature, luminosity } from './stellarPhysics';
 import { K_BOLTZMANN_REDUCED, SPECIES, Species, T_REDUCED_TO_KELVIN } from './types';
 import { checkNebulaFormation, updateNebulae } from './nebulae';
 import {
@@ -101,6 +102,12 @@ export interface Effector {
   // Birth metallicity for stars (0 = Pop III pristine, ~1 = Pop I enriched).
   // Inherited from the global ISM metallicity at the moment of formation.
   metallicity?: number;
+  /** Effective surface temperature in Kelvin (stars only). Derived from
+   *  strength via stellarPhysics.effectiveTemperature() at birth; stable for
+   *  the star's lifetime so spectral class / color don't flicker. */
+  temperatureK?: number;
+  /** Bolometric luminosity in solar units (L⊙). Drives PointLight intensity. */
+  luminositySolar?: number;
 }
 
 interface PairParams {
@@ -745,8 +752,11 @@ export class Simulator {
       radius: p.radius, strength: p.strength, consumed: 0,
       bornAt: this.simTime,
     };
-    if (type === 'star') e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
-    else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
+    if (type === 'star') {
+      e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
+      e.temperatureK = effectiveTemperature(e.strength);
+      e.luminositySolar = luminosity(e.strength);
+    } else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
     else if (type === 'nebula') e.name = `☁ N-${String(++this.nebulaCounter).padStart(3, '0')}`;
     else if (type === 'neutron_star') e.name = `⚪ NS-${String(++this.nsCounter).padStart(3, '0')}`;
     this.effectors.push(e);

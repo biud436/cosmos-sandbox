@@ -16,22 +16,37 @@ export interface Planet {
   index: number;
   name: string;
   planetClass: PlanetClass;
-  /** Orbit semi-major axis, in *world units* relative to the host star. */
+  /** Orbit semi-major axis, in *world units* relative to the host star.
+   * For an eccentric orbit, this is the average of perihelion and aphelion. */
   orbitRadius: number;
   /** Orbital period in seconds of ship proper time (visual ornament). */
   periodSec: number;
-  /** Phase offset at t = 0, radians. */
+  /** Phase offset at t = 0, radians — the *mean anomaly* baseline so two
+   * planets seeded with the same phase0 start at the same orbital phase
+   * regardless of eccentricity. */
   phase0: number;
   /** Orbit plane tilt from host's local up, radians. */
   inclination: number;
+  /** Orbital eccentricity. 0 = circle, →1 = very elongated. Capped at ~0.6
+   * here so the visual ellipse stays readable and doesn't graze the star. */
+  eccentricity: number;
+  /** Argument of periapsis, radians. Rotates the ellipse within its own
+   * orbital plane so periapsis isn't always on +X — keeps multi-planet
+   * systems from looking like everyone shares the same major axis. */
+  argPeriapsis: number;
   /** Rendered sphere radius in world units. */
   visualRadius: number;
   /** RGB in [0,1]. */
   color: [number, number, number];
-  /** Self-rotation period in ship-time seconds (visual only). */
+  /** Self-rotation period in ship-time seconds (visual only). Negative
+   * values mean retrograde spin. For tidally-locked worlds, equals periodSec. */
   spinPeriodSec: number;
   /** Axial tilt in radians, applied to the planet's local Y axis. */
   axialTilt: number;
+  /** Equatorial oblateness — fractional ratio (equatorial - polar) /
+   * equatorial. Visualized as a flatten on the Y axis. Real Jupiter is ~0.065;
+   * we exaggerate gas giants slightly so it reads at distance. */
+  oblateness: number;
   /** Per-planet seed (decimal noise of mulberry32 output) used by the
    * fragment shader to decorrelate surface patterns between planets of
    * the same class. Stable for the planet's lifetime. */
@@ -145,14 +160,39 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
     const phase0 = rng() * Math.PI * 2;
     const inclination = (rng() - 0.5) * 0.12;
 
+    // Eccentricity: most rocky/desert worlds stay nearly circular (Solar
+    // System bias — Mercury at e=0.21 is the outlier). Gas giants and ice
+    // worlds can be more eccentric, especially in the outer system where
+    // secular perturbations stack up over Gyrs. We cap at ~0.55 so the
+    // ellipse stays readable and the planet doesn't graze the host.
+    let eccentricity: number;
+    if (cls === 'lava') eccentricity = 0.0 + rng() * 0.08;            // hot Jupiters / Mercurys
+    else if (cls === 'gas' || cls === 'ice') eccentricity = 0.02 + rng() * 0.30;
+    else eccentricity = 0.0 + rng() * 0.18;
+    // Occasional comet-like outlier (~6% chance) — visually striking.
+    if (rng() < 0.06 && t > 0.4) eccentricity = Math.min(0.55, eccentricity + 0.25 + rng() * 0.2);
+    const argPeriapsis = rng() * Math.PI * 2;
+
     // Visual-only rotation and tilt. Gas giants spin fast (10–25s), rocky
-    // worlds slow (40–80s) — keeps Jupiter-feel vs Earth-feel.
+    // worlds slow (40–80s) — keeps Jupiter-feel vs Earth-feel. Close-in
+    // rocky worlds get tidally locked (spin = orbital period) further down.
     const spinFast = cls === 'gas';
-    const spinPeriodSec = spinFast ? 10 + rng() * 15 : 40 + rng() * 40;
+    let spinPeriodSec = spinFast ? 10 + rng() * 15 : 40 + rng() * 40;
+    // ~15% of free-spinning planets are retrograde (Venus-like).
+    if (rng() < 0.15) spinPeriodSec = -spinPeriodSec;
     const axialTilt = (rng() - 0.5) * 0.7;
+
+    // Oblateness: gas giants visibly squashed, rocky worlds essentially
+    // spherical. Ice giants moderate. Real Jupiter ≈ 0.065, Saturn ≈ 0.098;
+    // we exaggerate to ~0.10–0.15 so it reads at fly-by distance.
+    let oblateness: number;
+    if (cls === 'gas') oblateness = 0.08 + rng() * 0.07;
+    else if (cls === 'ice') oblateness = 0.02 + rng() * 0.04;
+    else oblateness = 0.0;
+
     const shaderSeed = rng();
 
-    planets.push({
+    const planet: Planet = {
       index: i,
       name: `${planetName(eff, i)}`,
       planetClass: cls,
@@ -160,12 +200,67 @@ export function generatePlanetSystem(eff: Effector): PlanetSystem | null {
       periodSec,
       phase0,
       inclination,
+      eccentricity,
+      argPeriapsis,
       visualRadius,
       color,
       spinPeriodSec,
       axialTilt,
+      oblateness,
       shaderSeed,
-    });
+    };
+    // Apply tidal locking AFTER construction so the helper sees the final
+    // orbit radius / eccentricity. Locked planets always show the same face
+    // to their host — a real, observable phenomenon for close-in rocky worlds.
+    if (isTidallyLocked(planet, eff.radius)) {
+      planet.spinPeriodSec = planet.periodSec; // synchronous rotation
+      // Locked worlds have nearly zero obliquity (Sun keeps them aligned).
+      planet.axialTilt *= 0.15;
+    }
+    planets.push(planet);
+  }
+
+  // Orbit-stability pass. After per-planet eccentricities are assigned, two
+  // adjacent planets' ellipses can cross if apoapsis(inner) > periapsis(outer).
+  // The Solar System never has crossings — Pluto-Neptune look like they do,
+  // but the orbits are out of resonance so they never collide. We don't model
+  // resonance, so we conservatively require the apoapsis-to-periapsis gap to
+  // stay positive with a margin, and squeeze eccentricities (proportionally,
+  // so we keep the qualitative "this one is more eccentric than that one"
+  // ranking) until the system is non-crossing.
+  planets.sort((a, b) => a.orbitRadius - b.orbitRadius);
+  const margin = 1.04; // 4% safety so periapsis stays clearly outside apoapsis
+  for (let i = 1; i < planets.length; i++) {
+    const inner = planets[i - 1];
+    const outer = planets[i];
+    const apoIn = inner.orbitRadius * (1 + inner.eccentricity);
+    const periOut = outer.orbitRadius * (1 - outer.eccentricity);
+    if (apoIn * margin < periOut) continue; // already safe
+
+    // Try shrinking both eccentricities by a common factor x ∈ [0, 1] so the
+    // crossing just resolves. Algebra: a_in·(1+x·e_in)·margin = a_out·(1−x·e_out)
+    //   ⇒ x · (margin·a_in·e_in + a_out·e_out) = a_out − margin·a_in
+    const aIn = inner.orbitRadius;
+    const aOut = outer.orbitRadius;
+    const denom = margin * aIn * inner.eccentricity + aOut * outer.eccentricity;
+    const numer = aOut - margin * aIn;
+    if (numer > 0 && denom > 0) {
+      const x = Math.max(0, Math.min(1, numer / denom));
+      inner.eccentricity *= x;
+      outer.eccentricity *= x;
+    } else {
+      // Hard case: even circles cross (the log-spacing jitter put two planets
+      // at nearly the same a). Force both to circles and nudge the outer one
+      // outward — small price for visual sanity. Subsequent iterations of the
+      // outer loop will re-test against the next outer planet.
+      inner.eccentricity = 0;
+      outer.eccentricity = 0;
+      const newR = Math.max(outer.orbitRadius, aIn * margin * 1.08);
+      // Kepler's 3rd law: T ∝ a^1.5 — keep period consistent so the velocity
+      // along the orbit reads correctly when we move the planet outward.
+      outer.periodSec *= Math.pow(newR / outer.orbitRadius, 1.5);
+      outer.orbitRadius = newR;
+    }
   }
 
   return {
@@ -192,4 +287,70 @@ export function planetClassLabel(cls: PlanetClass): string {
     case 'ice':    return '얼음형';
     case 'gas':    return '가스 거대';
   }
+}
+
+/** Solve Kepler's equation E - e·sin(E) = M for the eccentric anomaly using
+ *  Newton-Raphson. Five iterations are plenty for e < 0.7; we cap iterations
+ *  defensively but break early on convergence so the hot path stays cheap. */
+function eccentricAnomaly(M: number, e: number): number {
+  // Normalize M to [-π, π] so the iteration starts close to the answer
+  // and doesn't accumulate drift across many revolutions.
+  M = ((M + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  let E = e < 0.8 ? M : Math.PI;
+  for (let i = 0; i < 6; i++) {
+    const dE = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= dE;
+    if (Math.abs(dE) < 1e-8) break;
+  }
+  return E;
+}
+
+/** Advance a planet along its Kepler ellipse to the given proper time, in
+ *  world-space coordinates *relative to the host star* (i.e., the host sits
+ *  at the origin of these coordinates). Writes into `out` to avoid allocs.
+ *
+ *  Uses the standard parametric form: with semi-major axis a, eccentricity e,
+ *  eccentric anomaly E,
+ *      x_plane =  a (cos E − e)
+ *      y_plane =  a √(1−e²) sin E
+ *  Rotates by argPeriapsis within the orbit plane, then tilts by inclination
+ *  around the X axis (matching the existing convention where orbital plane is
+ *  X-Z and the inclination tips the Z component into Y).
+ */
+export function planetPosition(p: Planet, time: number, out: [number, number, number]): void {
+  const meanMotion = (Math.PI * 2) / p.periodSec;
+  const M = p.phase0 + meanMotion * time;
+  const e = p.eccentricity;
+  const E = eccentricAnomaly(M, e);
+  const cosE = Math.cos(E);
+  const sinE = Math.sin(E);
+  const a = p.orbitRadius;
+  const xPlane = a * (cosE - e);
+  const yPlane = a * Math.sqrt(Math.max(0, 1 - e * e)) * sinE;
+
+  const cosW = Math.cos(p.argPeriapsis);
+  const sinW = Math.sin(p.argPeriapsis);
+  // Rotate the ellipse within its own plane (X-Z plane of the host).
+  const xRot = xPlane * cosW - yPlane * sinW;
+  const zRot = xPlane * sinW + yPlane * cosW;
+
+  const sinI = Math.sin(p.inclination);
+  const cosI = Math.cos(p.inclination);
+  out[0] = xRot;
+  out[1] = zRot * sinI;
+  out[2] = zRot * cosI;
+}
+
+/** True/false: does this planet's periapsis sit close enough to the host that
+ *  tidal locking is the realistic outcome? Used by the generator to set the
+ *  spin period equal to the orbital period for inner rocky worlds. */
+export function isTidallyLocked(p: Planet, hostRadius: number): boolean {
+  // Locking radius scales with the host's gravitational reach. Real Earth
+  // sits outside the Sun's locking radius; Mercury is locked in a 3:2 spin
+  // resonance — close but not quite synchronous. We treat ≤ ~12 host-radii
+  // for rocky/desert/lava worlds as a hard lock and let everything else
+  // spin freely. Gas giants never lock at the visual radii we use here.
+  if (p.planetClass === 'gas' || p.planetClass === 'ice') return false;
+  const perihelion = p.orbitRadius * (1 - p.eccentricity);
+  return perihelion < hostRadius * 12;
 }

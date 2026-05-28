@@ -87,6 +87,25 @@ function formatStellarDistance(u: number): string {
  *  main.ts pass planet orbit/radius, which is the planetary context. */
 export const formatRealDistance = formatPlanetaryDistance;
 
+/** Light-travel time for a distance, displayed in the appropriate unit.
+ *  Interstellar distances → years (since 1 ly = light-travel of 1 year by
+ *  definition); planetary → minutes/seconds. The unit pick mirrors the
+ *  distance formatters so the two readouts agree on what scale we're in. */
+function formatLightDelay(u: number): string {
+  if (u > INTERSTELLAR_U_THRESHOLD) {
+    const years = u * INTERSTELLAR_LY_PER_U; // 1 ly takes 1 year for light
+    if (years >= 1000) return `${years.toFixed(0)} 년`;
+    if (years >= 10)   return `${years.toFixed(1)} 년`;
+    return `${years.toFixed(2)} 년`;
+  }
+  // Planetary scale: AU → minutes (1 AU = 8.32 light-minutes).
+  const au = u * PLANETARY_AU_PER_U;
+  const minutes = au * 8.317;
+  if (minutes >= 60) return `${(minutes / 60).toFixed(1)} 시간`;
+  if (minutes >= 1)  return `${minutes.toFixed(1)} 분`;
+  return `${(minutes * 60).toFixed(0)} 초`;
+}
+
 export interface HUDTarget {
   kind: 'planet' | 'star';
   label: string;
@@ -110,6 +129,8 @@ export class ShipHUD {
   private readonly thrFill: HTMLElement;
   private readonly nearestEl: HTMLElement;
   private readonly tgtEl: HTMLElement;
+  private readonly relRow: HTMLElement;
+  private readonly relEl: HTMLElement;
   private readonly gizmoCanvas: HTMLCanvasElement;
   private readonly gizmoCtx: CanvasRenderingContext2D;
   private readonly hintEl: HTMLElement;
@@ -133,6 +154,7 @@ export class ShipHUD {
         <div class="ship-hud-row"><span class="ship-hud-k">POS</span><span class="ship-hud-v" id="ship-pos">—</span></div>
         <div class="ship-hud-row"><span class="ship-hud-k">VEL</span><span class="ship-hud-v" id="ship-vel">—</span></div>
         <div class="ship-hud-row"><span class="ship-hud-k">|v|</span><span class="ship-hud-v" id="ship-spd">—</span></div>
+        <div class="ship-hud-row ship-hud-rel" id="ship-hud-rel" style="display:none"><span class="ship-hud-k">REL</span><span class="ship-hud-v" id="ship-rel">—</span></div>
         <div class="ship-hud-row"><span class="ship-hud-k">NEAR</span><span class="ship-hud-v" id="ship-near">탐색 중…</span></div>
         <div class="ship-hud-row"><span class="ship-hud-k">TGT</span><span class="ship-hud-v" id="ship-tgt">—</span></div>
       </div>
@@ -184,6 +206,8 @@ export class ShipHUD {
     this.thrFill = this.root.querySelector('#ship-thr-fill') as HTMLElement;
     this.nearestEl = this.root.querySelector('#ship-near') as HTMLElement;
     this.tgtEl = this.root.querySelector('#ship-tgt') as HTMLElement;
+    this.relRow = this.root.querySelector('#ship-hud-rel') as HTMLElement;
+    this.relEl = this.root.querySelector('#ship-rel') as HTMLElement;
     this.gizmoCanvas = this.root.querySelector('#ship-gizmo') as HTMLCanvasElement;
     this.gizmoCtx = this.gizmoCanvas.getContext('2d')!;
     this.hintEl = this.root.querySelector('#ship-hud-hint') as HTMLElement;
@@ -242,6 +266,27 @@ export class ShipHUD {
       this.nearestEl.textContent = `${name} · ${formatStellarDistance(nearestStar.distance)}`;
     } else {
       this.nearestEl.textContent = '—';
+    }
+
+    // Relativistic readout. Hide unless v is meaningfully fast — sub-5%c
+    // means γ-1 < 0.13%, which would just be HUD noise. At higher β we show:
+    //   γ  (time dilation factor — 0.5c→1.15×, 0.9c→2.29×, 0.99c→7.09×)
+    //   D  (relativistic Doppler factor toward the velocity vector, ≥1
+    //       means blueshift forward — visible Doppler color shift kicks in
+    //       around ~1.05 for the player's intuition)
+    //   lt (light-travel time to the nearest star, in the matching scale)
+    const beta = Math.min(0.9999, state.speedC);
+    if (beta > 0.05) {
+      const gamma = 1 / Math.sqrt(Math.max(1e-6, 1 - beta * beta));
+      const doppler = Math.sqrt((1 + beta) / Math.max(1e-6, 1 - beta));
+      const ltStr = nearestStar ? formatLightDelay(nearestStar.distance) : '—';
+      // β shown as percentage of c for quick reading; γ to 2 decimals at
+      // moderate speed and 1 decimal once it gets dramatic.
+      const gStr = gamma >= 10 ? gamma.toFixed(1) : gamma.toFixed(2);
+      this.relRow.style.display = '';
+      this.relEl.innerHTML = `γ=<b>${gStr}</b> · D=${doppler.toFixed(2)} · lt(별)=${ltStr}`;
+    } else {
+      this.relRow.style.display = 'none';
     }
 
     if (target) {
@@ -475,6 +520,13 @@ export class ShipHUD {
       }
       .ship-hud-v {
         color: #e8f3ff; font-variant-numeric: tabular-nums;
+      }
+      .ship-hud-rel .ship-hud-k {
+        color: #c08fff;
+      }
+      .ship-hud-rel .ship-hud-v {
+        color: #e9d2ff;
+        text-shadow: 0 0 4px rgba(170, 110, 240, 0.35);
       }
       .ship-hud-tr {
         position: absolute; top: 12px; right: 12px;

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { Effector } from '../physics/Simulator';
-import { PlanetClass, PlanetSystem } from './PlanetSystem';
+import { blackbodyRGB } from '../physics/stellarPhysics';
+import { GraphicsSettings } from '../render/GraphicsSettings';
+import { Planet, PlanetClass, PlanetSystem, planetPosition } from './PlanetSystem';
 import { createPlanetMaterial, PlanetMaterialHandle } from './PlanetShader';
 
 // Renders the procedural planets for a single visited star. Each instance
@@ -8,10 +10,26 @@ import { createPlanetMaterial, PlanetMaterialHandle } from './PlanetShader';
 // evicts. Planet positions are advanced from shipProperTime (passed each
 // frame to update()), so they don't smear when the user dilates cosmic time.
 
-// 48×32 is high enough that close-flyby silhouettes don't read as facets
-// while still cheap for ~10 planets per system.
-const SPHERE_GEOM = new THREE.SphereGeometry(1, 48, 32);
-const ATMOSPHERE_GEOM = new THREE.SphereGeometry(1, 32, 24);
+// Module-level geometry cache, keyed by segments tuple. Multiple star systems
+// sharing the same quality preset re-use the same SphereGeometry so we don't
+// allocate a fresh vertex buffer per planet. Falls back to a default if no
+// settings were passed (mainly for tests / standalone use).
+const SPHERE_CACHE = new Map<string, THREE.SphereGeometry>();
+const ATMO_CACHE = new Map<string, THREE.SphereGeometry>();
+function getSphere(w: number, h: number): THREE.SphereGeometry {
+  const key = `${w}x${h}`;
+  let g = SPHERE_CACHE.get(key);
+  if (!g) { g = new THREE.SphereGeometry(1, w, h); SPHERE_CACHE.set(key, g); }
+  return g;
+}
+function getAtmo(w: number, h: number): THREE.SphereGeometry {
+  const key = `${w}x${h}`;
+  let g = ATMO_CACHE.get(key);
+  if (!g) { g = new THREE.SphereGeometry(1, w, h); ATMO_CACHE.set(key, g); }
+  return g;
+}
+const DEFAULT_PLANET_SEGMENTS: [number, number] = [48, 32];
+const DEFAULT_ATMO_SEGMENTS: [number, number] = [32, 24];
 const ORBIT_SEGMENTS = 96;
 
 // Per-class atmosphere settings. `null` = airless (lava planets stay bare).
@@ -42,7 +60,7 @@ interface AtmosphereHandle {
   uHasSun: { value: number };
 }
 
-function createAtmosphereMaterial(tint: THREE.Color, thickness: number, hasSun: boolean): AtmosphereHandle {
+function createAtmosphereMaterial(tint: THREE.Color, thickness: number, hasSun: boolean, geom: THREE.SphereGeometry): AtmosphereHandle {
   const uSunDir = { value: new THREE.Vector3(1, 0, 0) };
   const uHasSun = { value: hasSun ? 1 : 0 };
   const material = new THREE.ShaderMaterial({
@@ -95,7 +113,7 @@ function createAtmosphereMaterial(tint: THREE.Color, thickness: number, hasSun: 
       }
     `,
   });
-  const mesh = new THREE.Mesh(ATMOSPHERE_GEOM, material);
+  const mesh = new THREE.Mesh(geom, material);
   mesh.frustumCulled = false;
   return { mesh, material, uSunDir, uHasSun };
 }
@@ -115,11 +133,16 @@ export class StarSystemView {
   private readonly host: Effector;
   private readonly starLight: THREE.PointLight | null;
 
-  constructor(system: PlanetSystem, host: Effector) {
+  constructor(system: PlanetSystem, host: Effector, gfx?: GraphicsSettings) {
     this.system = system;
     this.host = host;
     this.group = new THREE.Group();
     this.group.frustumCulled = false;
+
+    const sphereSegs = gfx?.planetSphereSegments ?? DEFAULT_PLANET_SEGMENTS;
+    const atmoSegs = gfx?.atmoSphereSegments ?? DEFAULT_ATMO_SEGMENTS;
+    const sphereGeom = getSphere(sphereSegs[0], sphereSegs[1]);
+    const atmoGeom = getAtmo(atmoSegs[0], atmoSegs[1]);
 
     this.orbitMaterial = new THREE.LineBasicMaterial({
       color: 0x668cb8,
@@ -133,14 +156,17 @@ export class StarSystemView {
     // light to do the work. Range is set roughly to the outer planet so the
     // light doesn't leak across the entire scene.
     if (host.type === 'star') {
-      // Bumped intensity + decay=1 (not physical inverse-square): with the
-      // wider orbit clearance (planets at 8-13× eff.radius), inverse-square
-      // falloff left mid/outer planets effectively unlit — they read as
-      // black silhouettes with only the atmospheric rim halo visible.
-      // Linear decay keeps far planets visible while still attenuating with
-      // distance, which is what the player intuitively expects from a star.
-      const intensity = Math.min(220, 60 + host.strength * 1.0);
-      const tint = new THREE.Color(1.0, 0.95, 0.85);
+      // Tint from blackbody color at the star's effective T. A red M-dwarf
+      // bathes its planets in reddish light; a blue O-giant in cold white.
+      // Falls back to a warm cream if T isn't set (legacy stars).
+      const tempK = host.temperatureK ?? 5800;
+      const [r, g, b] = blackbodyRGB(tempK);
+      const tint = new THREE.Color(r, g, b);
+      // Intensity from bolometric luminosity (L⊙), log-compressed so a
+      // bright O-giant doesn't whiteout the scene next to a tiny M-dwarf.
+      // Compression matches what the eye does (mag scale).
+      const L = host.luminositySolar ?? 1;
+      const intensity = Math.min(280, 70 + 35 * Math.log10(Math.max(0.01, L) * 10 + 1));
       // Range = 0 means "infinite" in three.js, which would tint everything
       // in the simulation. Cap it to a few system widths.
       const range = Math.max(80, host.radius * 120);
@@ -153,12 +179,17 @@ export class StarSystemView {
 
     for (const planet of system.planets) {
       const handle = createPlanetMaterial(planet);
-      const mesh = new THREE.Mesh(SPHERE_GEOM, handle.material);
-      mesh.scale.setScalar(planet.visualRadius);
+      const mesh = new THREE.Mesh(sphereGeom, handle.material);
+      // Oblateness: equator > pole. Scale equatorial axes (X, Z) by the
+      // visual radius and squash the polar axis (Y) by (1 - oblateness).
+      // The mesh is later rotated around X by axialTilt — applied as a
+      // parent rotation by the renderer's update loop's mesh.rotation.x
+      // already, so the squash stays aligned with the local equator.
+      const re = planet.visualRadius;
+      const rp = planet.visualRadius * (1 - planet.oblateness);
+      mesh.scale.set(re, rp, re);
       // Apply axial tilt once as a rotation around X; spin advances around
-      // the planet's local Y in update(). Composing tilt as a separate
-      // parent Group would be cleaner but a single rotation is enough since
-      // the unit-sphere geometry has no preferred up.
+      // the planet's local Y in update().
       mesh.rotation.x = planet.axialTilt;
       this.group.add(mesh);
       this.planetMeshes.push(mesh);
@@ -173,33 +204,44 @@ export class StarSystemView {
       const atmoSpec = atmosphereOf(planet.planetClass);
       if (atmoSpec) {
         const hasSun = this.host.type === 'star';
-        const atmo = createAtmosphereMaterial(atmoSpec.tint, atmoSpec.thickness, hasSun);
-        atmo.mesh.scale.setScalar(planet.visualRadius * atmoSpec.scale);
+        const atmo = createAtmosphereMaterial(atmoSpec.tint, atmoSpec.thickness, hasSun, atmoGeom);
+        // Match the planet's oblateness so the atmosphere doesn't sit as a
+        // perfect sphere around a squashed gas giant.
+        const re = planet.visualRadius * atmoSpec.scale;
+        const rp = re * (1 - planet.oblateness);
+        atmo.mesh.scale.set(re, rp, re);
         this.group.add(atmo.mesh);
         this.atmospheres.push(atmo);
       } else {
         this.atmospheres.push(null);
       }
 
-      this.orbitLines.push(this.makeOrbitLine(planet.orbitRadius, planet.inclination));
+      this.orbitLines.push(this.makeOrbitLine(planet));
       this.group.add(this.orbitLines[this.orbitLines.length - 1]);
     }
   }
 
-  private makeOrbitLine(radius: number, inclination: number): THREE.LineLoop {
+  /** Build an ellipse outline matching the planet's Kepler orbit. The host
+   *  sits at one focus (not the center), so we use planetPosition() rather
+   *  than parametrizing a circle: that way the line traces exactly where the
+   *  planet actually goes, including periapsis bias from argPeriapsis. */
+  private makeOrbitLine(planet: Planet): THREE.LineLoop {
     const positions = new Float32Array(ORBIT_SEGMENTS * 3);
-    const sinI = Math.sin(inclination);
-    const cosI = Math.cos(inclination);
+    // Sample by mean anomaly so spacing on the orbit line is uniform in time
+    // (denser near apoapsis where the planet moves slowly — matches reality).
+    // For pure visual evenness we'd sample by true anomaly, but uniform-time
+    // sampling gives a subtle hint that the planet lingers far out.
+    const out: [number, number, number] = [0, 0, 0];
+    // The planet's phase0 doesn't matter for the orbit-line shape — only e
+    // and argPeriapsis and inclination do. Sample with phase0 cleared so the
+    // line doesn't shift if we ever regenerate from a different t.
+    const proxy: Planet = { ...planet, phase0: 0 };
     for (let i = 0; i < ORBIT_SEGMENTS; i++) {
-      const a = (i / ORBIT_SEGMENTS) * Math.PI * 2;
-      const x = Math.cos(a) * radius;
-      const z = Math.sin(a) * radius;
-      // Tilt around X axis by inclination
-      const y = z * sinI;
-      const z2 = z * cosI;
-      positions[i * 3 + 0] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = z2;
+      const t = (i / ORBIT_SEGMENTS) * proxy.periodSec;
+      planetPosition(proxy, t, out);
+      positions[i * 3 + 0] = out[0];
+      positions[i * 3 + 1] = out[1];
+      positions[i * 3 + 2] = out[2];
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -218,17 +260,16 @@ export class StarSystemView {
 
     const tmp = new THREE.Vector3();
     const sunWorld = new THREE.Vector3();
+    const posOut: [number, number, number] = [0, 0, 0];
     for (let i = 0; i < this.system.planets.length; i++) {
       const p = this.system.planets[i];
       const mesh = this.planetMeshes[i];
-      const angle = p.phase0 + (shipTime / p.periodSec) * Math.PI * 2;
-      const sinI = Math.sin(p.inclination);
-      const cosI = Math.cos(p.inclination);
-      const x = Math.cos(angle) * p.orbitRadius;
-      const z = Math.sin(angle) * p.orbitRadius;
-      mesh.position.set(x, z * sinI, z * cosI);
+      // Kepler ellipse: solve E - e sin E = M analytically each frame.
+      planetPosition(p, shipTime, posOut);
+      mesh.position.set(posOut[0], posOut[1], posOut[2]);
 
       // Self-rotation. Tilt is baked into rotation.x; spin advances .y.
+      // Negative spinPeriodSec = retrograde.
       mesh.rotation.y = (shipTime / p.spinPeriodSec) * Math.PI * 2;
 
       // Atmosphere tracks position (no rotation needed — sphere is invariant).
@@ -298,7 +339,11 @@ export class StarSystemView {
     if (this.system.planets.length === 0) return 0;
     let max = 0;
     for (const p of this.system.planets) {
-      const r = p.orbitRadius + p.visualRadius;
+      // Apoapsis = a(1+e), the farthest a planet ever travels from its host
+      // — use this so the visit-detection sphere doesn't fall short of an
+      // eccentric outer planet at the wrong moment in its orbit.
+      const apoapsis = p.orbitRadius * (1 + p.eccentricity);
+      const r = apoapsis + p.visualRadius;
       if (r > max) max = r;
     }
     return max;

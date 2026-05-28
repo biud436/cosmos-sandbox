@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPECIES } from '../physics/types';
 import { Effector, EffectorType, Simulator } from '../physics/Simulator';
+import { GraphicsSettings } from './GraphicsSettings';
 
 // Mass → spectral class color, approximating O/B/A/F/G/K/M sequence.
 // Mass thresholds chosen for the compressed sim scale (not solar units).
@@ -112,7 +113,13 @@ export class Scene {
   // half the sky goes dark.
   private skyGroup: THREE.Group | null = null;
 
-  constructor(container: HTMLElement, boxHalf: number, maxPerSpecies: number) {
+  /** Live graphics settings — mutated in place by setQualityPreset(). Knobs
+   *  read by hot paths (LOD threshold, etc.) dereference through this so
+   *  changing a preset takes effect on the next frame. */
+  graphicsSettings: GraphicsSettings;
+
+  constructor(container: HTMLElement, boxHalf: number, maxPerSpecies: number, gfx: GraphicsSettings) {
+    this.graphicsSettings = gfx;
     this.boxHalf = boxHalf;
     this.speciesCapacity = SPECIES.map(() => maxPerSpecies);
     this.maxParticlesTotal = maxPerSpecies * SPECIES.length;
@@ -126,12 +133,15 @@ export class Scene {
     this.camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, boxHalf * 80);
     this.camera.position.set(boxHalf * 1.6, boxHalf * 1.1, boxHalf * 1.6);
 
-    // antialias 비용은 fragment fill 의 25~40% 추가. Retina/4K (DPR≥1.5)
-    // 에서는 pixel density 가 충분해서 AA 없이도 깨끗하게 보이므로 자동 off.
-    // 저해상도 디스플레이에서만 MSAA 활성화.
-    const wantAA = window.devicePixelRatio < 1.5;
-    this.renderer = new THREE.WebGLRenderer({ antialias: wantAA, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // MSAA is a WebGLRenderer-construction option — can't be toggled at
+    // runtime without re-creating the context. We read it from the live
+    // graphics settings; changing it later requires a page reload (the
+    // toolbar surfaces a hint when the player picks a preset that flips it).
+    this.renderer = new THREE.WebGLRenderer({ antialias: gfx.antialias, powerPreference: 'high-performance' });
+    const cap = gfx.pixelRatioCap;
+    this.basePixelRatio = Math.min(window.devicePixelRatio, cap);
+    this.currentPixelRatio = this.basePixelRatio;
+    this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
 
@@ -160,7 +170,7 @@ export class Scene {
     this.scene.add(skyGroup);
     this.skyGroup = skyGroup;
     const farR = this.boxHalf * 18;
-    const count = 1800;
+    const count = this.graphicsSettings.starfieldCount;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const tint = [
@@ -616,6 +626,46 @@ export class Scene {
     if (this.gridMesh) this.gridMesh.visible = visible;
   }
 
+  /** Switch to a new graphics-quality preset at runtime. AA is NOT changed
+   *  here — that's a renderer-construction flag and needs a fresh context.
+   *  Returns `true` if the caller should prompt for a page reload because
+   *  AA mismatch is now visible. */
+  applyGraphicsSettings(next: GraphicsSettings): boolean {
+    const prev = this.graphicsSettings;
+    this.graphicsSettings = next;
+    // DPR cap. We pin currentPixelRatio to the new base immediately; the
+    // adaptive loop (if enabled) can still dip it later if FPS sags.
+    this.basePixelRatio = Math.min(window.devicePixelRatio, next.pixelRatioCap);
+    this.currentPixelRatio = this.basePixelRatio;
+    this.renderer.setPixelRatio(this.currentPixelRatio);
+    // Starfield count change requires a rebuild — cheap (a few thousand verts).
+    if (prev.starfieldCount !== next.starfieldCount && this.skyGroup) {
+      this.rebuildStarfield();
+    }
+    // AA can't change at runtime. Report mismatch so the caller can toast.
+    return prev.antialias !== next.antialias;
+  }
+
+  /** Tear down the existing starfield + skybox dome and rebuild from the
+   *  current settings. Used when the player changes density at runtime. */
+  private rebuildStarfield(): void {
+    if (!this.skyGroup) return;
+    // Dispose children of skyGroup (the Points + the inner-shell nebula
+    // mesh). Their geometries/materials are one-off per build.
+    for (const child of [...this.skyGroup.children]) {
+      this.skyGroup.remove(child);
+      const m = child as THREE.Mesh | THREE.Points;
+      const geo = (m.geometry as THREE.BufferGeometry | undefined);
+      if (geo) geo.dispose();
+      const mat = (m.material as THREE.Material | THREE.Material[] | undefined);
+      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+      else if (mat) mat.dispose();
+    }
+    this.scene.remove(this.skyGroup);
+    this.skyGroup = null;
+    this.buildStarfield();
+  }
+
   private buildParticleMeshes(): void {
     // High LOD: detail=2 = 320 triangles per sphere. Looks correctly round
     // for particles big enough to occupy >8 screen pixels.
@@ -701,11 +751,11 @@ export class Scene {
       const countsLo = this.speciesCountsLoScratch;
       counts.fill(0);
       countsLo.fill(0);
-      // pixelSize ≈ radius * projScaleY / dist. Threshold of 6px is the
-      // empirically-found knee where icosa subdivision stops being visible
-      // on a typical desktop monitor at default DPR. Squared for cheap
-      // comparison: (radius * projScaleY) ² < THRESH² * dist².
-      const lodPixelThresh = 6.0;
+      // pixelSize ≈ radius * projScaleY / dist. Threshold pulled from the
+      // live quality settings — smaller = more particles upgraded to hi-LOD
+      // (looks crisper; costs more triangles). Squared for cheap comparison:
+      // (radius * projScaleY)² < THRESH² * dist².
+      const lodPixelThresh = this.graphicsSettings.particleLodPx;
       const lodCoef = this.projScaleY / lodPixelThresh;
       const camX = this.camera.position.x;
       const camY = this.camera.position.y;
@@ -1944,12 +1994,19 @@ export class Scene {
   // scenes. We start at the device DPR (capped at 2), then ratchet down when
   // FPS sags and back up when it recovers. The user feels smoother frames in
   // exchange for slightly softer rendering until they stop moving.
-  private readonly basePixelRatio = Math.min(window.devicePixelRatio, 2);
-  private currentPixelRatio = Math.min(window.devicePixelRatio, 2);
+  /** Initial DPR cap snapshot — recomputed when a new quality preset is
+   *  applied. Adaptive DPR may temporarily drive currentPixelRatio below
+   *  this but never above. */
+  private basePixelRatio: number;
+  private currentPixelRatio: number;
   private dprDownAccum = 0;
   private dprUpAccum = 0;
   /** Called once per second-ish with the rolling FPS measurement. */
   adaptPixelRatio(fps: number, dt: number): void {
+    // Adaptive DPR is opt-in per the player's quality preset. With it off,
+    // we hold currentPixelRatio at basePixelRatio regardless of FPS — the
+    // player explicitly asked for quality over smoothness.
+    if (!this.graphicsSettings.adaptiveDPR) return;
     // Only react after we've taken a real measurement. fps=0 in the first
     // few frames would otherwise stampede us down to the floor.
     if (fps <= 1) return;
