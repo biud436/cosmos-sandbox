@@ -6,8 +6,11 @@ import { GraphicsSettings } from './GraphicsSettings';
 import {
   SKY_NEBULA_VERT, SKY_NEBULA_FRAG, BOUNDARY_SHELL_VERT, BOUNDARY_SHELL_FRAG,
   GAS_VERT, GAS_FRAG, GAS_HALO_VERT, GAS_HALO_FRAG,
-  EFFECTOR_VERT, EFFECTOR_FRAG, GALAXY_HALO_VERT, GALAXY_HALO_FRAG,
+  EFFECTOR_VERT, EFFECTOR_FRAG,
 } from './shaders';
+import { BondRenderer } from './renderers/BondRenderer';
+import { GalaxyRenderer } from './renderers/GalaxyRenderer';
+import { OrbitTrailRenderer } from './renderers/OrbitTrailRenderer';
 
 // Mass → spectral class color, approximating O/B/A/F/G/K/M sequence.
 // Mass thresholds chosen for the compressed sim scale (not solar units).
@@ -60,8 +63,7 @@ export class Scene {
   private gridMesh: THREE.GridHelper | null = null;
   private universeMesh: THREE.LineSegments | null = null;
   private universeShell: THREE.Mesh | null = null;
-  private bondLines: THREE.LineSegments | null = null;
-  private bondGeom: THREE.BufferGeometry | null = null;
+  private bonds!: BondRenderer;
   readonly visibility = {
     particles: true,
     bonds: true,
@@ -75,25 +77,8 @@ export class Scene {
     nebulae: true,
     neutronStars: true,
   };
-  private galaxyHalos = new Map<string, { mesh: THREE.Mesh; mat: THREE.ShaderMaterial }>();
-  private selectedOrbitLines: THREE.LineSegments | null = null;
-  private selectedOrbitGeom: THREE.BufferGeometry | null = null;
-  private selectedOrbitPositions: Float32Array | null = null;
-  private selectedOrbitLink: THREE.Line | null = null;
-  private selectedOrbitLinkGeom: THREE.BufferGeometry | null = null;
-  private selectedOrbitLinkPositions: Float32Array | null = null;
-  private orbitSegments = 96;
-  private trailLines: THREE.Line | null = null;
-  private trailGeom: THREE.BufferGeometry | null = null;
-  private trailPositions: Float32Array | null = null;
-  private trailColors: Float32Array | null = null;
-  private trailCapacity = 512;
-  private trailWriteIdx = 0;
-  private trailCount = 0;
-  private trailLastEffector: Effector | null = null;
-  private trailSampleAccum = 0;
-  private trailSampleInterval = 1 / 60; // record at ~60Hz max
-  private bondPositions: Float32Array | null = null;
+  private galaxies!: GalaxyRenderer;
+  private orbits!: OrbitTrailRenderer;
   private effectorViews = new Map<Effector, {
     group: THREE.Group;
     mat: THREE.ShaderMaterial;
@@ -160,8 +145,9 @@ export class Scene {
     this.buildStarfield();
     this.buildParticleMeshes();
     this.buildGasRenderer();
-    this.buildBondRenderer();
-    this.buildOrbitRenderer();
+    this.bonds = new BondRenderer(this.scene, this.maxParticlesTotal);
+    this.galaxies = new GalaxyRenderer(this.scene);
+    this.orbits = new OrbitTrailRenderer(this.scene, this.visibility.orbits);
 
     const ro = new ResizeObserver(() => this.onResize(container));
     ro.observe(container);
@@ -274,19 +260,17 @@ export class Scene {
         if (this.gasHaloPoints) this.gasHaloPoints.visible = visible && this.renderMode === 'gas';
         break;
       case 'bonds':
-        if (this.bondLines) this.bondLines.visible = visible;
+        this.bonds.setVisible(visible);
         break;
       case 'boundary':
         if (this.universeMesh) this.universeMesh.visible = visible;
         if (this.universeShell) this.universeShell.visible = visible;
         break;
       case 'orbits':
-        if (this.selectedOrbitLines) this.selectedOrbitLines.visible = visible;
-        if (this.selectedOrbitLink) this.selectedOrbitLink.visible = visible;
-        if (this.trailLines) this.trailLines.visible = visible;
+        this.orbits.setVisible(visible);
         break;
       case 'galaxies':
-        for (const { mesh } of this.galaxyHalos.values()) mesh.visible = visible;
+        this.galaxies.setVisible(visible);
         break;
     }
   }
@@ -396,90 +380,6 @@ export class Scene {
     this.gasSizes = sizes;
   }
 
-  private buildBondRenderer(): void {
-    const maxBonds = this.maxParticlesTotal * 4;
-    const positions = new Float32Array(maxBonds * 2 * 3);
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geom.setDrawRange(0, 0);
-    const mat = new THREE.LineBasicMaterial({
-      color: 0x6688ff,
-      transparent: true,
-      opacity: 0.22,
-      depthWrite: false,
-    });
-    const lines = new THREE.LineSegments(geom, mat);
-    lines.frustumCulled = false;
-    this.scene.add(lines);
-    this.bondGeom = geom;
-    this.bondLines = lines;
-    this.bondPositions = positions;
-  }
-
-  private buildOrbitRenderer(): void {
-    // Trail: actual path the selected effector has traveled, with vertex-color fade
-    const trailCap = this.trailCapacity;
-    const tPositions = new Float32Array(trailCap * 3);
-    const tColors = new Float32Array(trailCap * 3);
-    const trailGeom = new THREE.BufferGeometry();
-    trailGeom.setAttribute('position', new THREE.BufferAttribute(tPositions, 3));
-    trailGeom.setAttribute('color', new THREE.BufferAttribute(tColors, 3));
-    trailGeom.setDrawRange(0, 0);
-    const trailMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-    });
-    const trail = new THREE.Line(trailGeom, trailMat);
-    trail.frustumCulled = false;
-    trail.visible = this.visibility.orbits;
-    this.scene.add(trail);
-    this.trailLines = trail;
-    this.trailGeom = trailGeom;
-    this.trailPositions = tPositions;
-    this.trailColors = tColors;
-
-    const verticesPerOrbit = this.orbitSegments * 2;
-    const selPositions = new Float32Array(verticesPerOrbit * 3);
-    const selGeom = new THREE.BufferGeometry();
-    selGeom.setAttribute('position', new THREE.BufferAttribute(selPositions, 3));
-    selGeom.setDrawRange(0, 0);
-    const selMat = new THREE.LineBasicMaterial({
-      color: 0x6688aa,
-      transparent: true,
-      opacity: 0.35,
-      depthWrite: false,
-    });
-    const selLines = new THREE.LineSegments(selGeom, selMat);
-    selLines.frustumCulled = false;
-    selLines.visible = this.visibility.orbits;
-    this.scene.add(selLines);
-    this.selectedOrbitLines = selLines;
-    this.selectedOrbitGeom = selGeom;
-    this.selectedOrbitPositions = selPositions;
-
-    const linkPositions = new Float32Array(2 * 3);
-    const linkGeom = new THREE.BufferGeometry();
-    linkGeom.setAttribute('position', new THREE.BufferAttribute(linkPositions, 3));
-    linkGeom.setDrawRange(0, 0);
-    const linkMat = new THREE.LineDashedMaterial({
-      color: 0xffd66a,
-      transparent: true,
-      opacity: 0.65,
-      dashSize: 0.6,
-      gapSize: 0.4,
-      depthWrite: false,
-    });
-    const link = new THREE.Line(linkGeom, linkMat);
-    link.frustumCulled = false;
-    link.visible = this.visibility.orbits;
-    this.scene.add(link);
-    this.selectedOrbitLink = link;
-    this.selectedOrbitLinkGeom = linkGeom;
-    this.selectedOrbitLinkPositions = linkPositions;
-  }
-
   setRenderMode(mode: 'solid' | 'gas'): void {
     if (mode === this.renderMode) return;
     this.renderMode = mode;
@@ -568,22 +468,9 @@ export class Scene {
   private readonly tmpFrustum = new THREE.Frustum();
   private readonly tmpProjView = new THREE.Matrix4();
   private readonly tmpSphere = new THREE.Sphere();
-  private readonly tmpL = new THREE.Vector3();
-  private readonly tmpUp = new THREE.Vector3(0, 1, 0);
   // Reused per-frame scratch buffers — avoid GC churn in the 60Hz sync path.
   private readonly speciesCountsScratch: Int32Array = new Int32Array(SPECIES.length);
   private readonly aliveEffectorScratch: Set<Effector> = new Set<Effector>();
-  private galaxyParentScratch: Int32Array | null = null;
-  // Galaxy clustering is O(n²) on the star list — we throttle it to ~5Hz.
-  // Halos are diffuse; a 200ms lag in their position/scale is imperceptible.
-  private galaxyAccum = 0;
-  private readonly galaxyInterval = 0.2;
-  // Orbit Kepler solve and computeLineDistances are also expensive when the
-  // selected body's orbit is large. Recompute the ellipse at ~10Hz; the
-  // dashed connector line gets re-measured only when the host or selection
-  // moved meaningfully (tracked below).
-  private orbitAccum = 0;
-  private readonly orbitInterval = 1 / 12;
 
   sync(sim: Simulator, frameDt = 1 / 60): void {
     const n = sim.count;
@@ -594,27 +481,10 @@ export class Scene {
     this.tmpProjView.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
     this.tmpFrustum.setFromProjectionMatrix(this.tmpProjView);
 
-    this.syncBonds(sim);
+    this.bonds.sync(sim);
     this.syncEffectors(sim, frameDt);
-    this.orbitAccum += frameDt;
-    if (this.orbitAccum >= this.orbitInterval || this.selectedEffector !== this.trailLastEffector) {
-      this.orbitAccum = 0;
-      this.syncOrbits(sim);
-    }
-    this.recordTrail(frameDt);
-    this.galaxyAccum += frameDt;
-    if (this.galaxyAccum >= this.galaxyInterval) {
-      this.galaxyAccum = 0;
-      this.syncGalaxies(sim);
-    } else {
-      // Cheap per-frame frustum-visibility refresh on the cached halos so
-      // they pop in/out as the camera turns, without re-running clustering.
-      for (const entry of this.galaxyHalos.values()) {
-        this.tmpSphere.center.copy(entry.mesh.position);
-        this.tmpSphere.radius = Math.max(entry.mesh.scale.x, entry.mesh.scale.y, entry.mesh.scale.z);
-        entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
-      }
-    }
+    this.orbits.sync(sim, this.selectedEffector, this.visibility.orbits, frameDt);
+    this.galaxies.sync(sim, this.tmpFrustum, this.visibility.galaxies, frameDt);
 
     if (this.renderMode === 'solid') {
       const counts = this.speciesCountsScratch;
@@ -701,26 +571,6 @@ export class Scene {
     }
   }
 
-  private syncBonds(sim: Simulator): void {
-    if (!this.bondGeom || !this.bondPositions) return;
-    const m = sim.bondListLength;
-    const cap = this.bondPositions.length / 6;
-    const k = Math.min(m, cap);
-    for (let b = 0; b < k; b++) {
-      const i = sim.getBondVertex(b, 'i');
-      const j = sim.getBondVertex(b, 'j');
-      const off = b * 6;
-      this.bondPositions[off + 0] = sim.positions[i * 3 + 0];
-      this.bondPositions[off + 1] = sim.positions[i * 3 + 1];
-      this.bondPositions[off + 2] = sim.positions[i * 3 + 2];
-      this.bondPositions[off + 3] = sim.positions[j * 3 + 0];
-      this.bondPositions[off + 4] = sim.positions[j * 3 + 1];
-      this.bondPositions[off + 5] = sim.positions[j * 3 + 2];
-    }
-    this.bondGeom.setDrawRange(0, k * 2);
-    (this.bondGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-  }
-
   private visibilityKeyFor(type: EffectorType): keyof Scene['visibility'] {
     switch (type) {
       case 'star': return 'stars';
@@ -729,475 +579,6 @@ export class Scene {
       case 'freezer': return 'freezers';
       case 'nebula': return 'nebulae';
       case 'neutron_star': return 'neutronStars';
-    }
-  }
-
-  private recordTrail(dt: number): void {
-    if (!this.trailGeom || !this.trailPositions || !this.trailColors || !this.trailLines) return;
-    const sel = this.selectedEffector;
-    if (!this.visibility.orbits || !sel) {
-      this.trailGeom.setDrawRange(0, 0);
-      this.trailLastEffector = null;
-      this.trailCount = 0;
-      this.trailWriteIdx = 0;
-      return;
-    }
-    if (sel !== this.trailLastEffector) {
-      this.trailCount = 0;
-      this.trailWriteIdx = 0;
-      this.trailLastEffector = sel;
-      this.trailSampleAccum = 0;
-    }
-    this.trailSampleAccum += dt;
-    if (this.trailSampleAccum < this.trailSampleInterval && this.trailCount > 0) {
-      // still draw existing trail with updated last-segment to current position
-      this.drawTrailBuffer(sel);
-      return;
-    }
-    this.trailSampleAccum = 0;
-    // Push current position into ring buffer
-    const idx = this.trailWriteIdx;
-    this.trailPositions[idx * 3 + 0] = sel.x;
-    this.trailPositions[idx * 3 + 1] = sel.y;
-    this.trailPositions[idx * 3 + 2] = sel.z;
-    this.trailWriteIdx = (idx + 1) % this.trailCapacity;
-    if (this.trailCount < this.trailCapacity) this.trailCount++;
-    this.drawTrailBuffer(sel);
-  }
-
-  private drawTrailBuffer(sel: Effector): void {
-    if (!this.trailGeom || !this.trailPositions || !this.trailColors) return;
-    const cap = this.trailCapacity;
-    const count = this.trailCount;
-    // Order from oldest to newest into a linear position attribute
-    // Use a temporary linear buffer in this.trailPositions via re-ordering? Too expensive.
-    // Instead: write linear vertex order directly each frame from the ring.
-    // Three.js Line draws in attribute order, so we need contiguous linear data.
-    // Allocate a transient view — we keep the ring buffer for positions and copy to a contiguous array here.
-    const linear = this._trailLinearScratch ??= new Float32Array(this.trailCapacity * 3);
-    const colors = this.trailColors;
-    const start = (this.trailWriteIdx - count + cap) % cap;
-    for (let i = 0; i < count; i++) {
-      const r = (start + i) % cap;
-      linear[i * 3 + 0] = this.trailPositions[r * 3 + 0];
-      linear[i * 3 + 1] = this.trailPositions[r * 3 + 1];
-      linear[i * 3 + 2] = this.trailPositions[r * 3 + 2];
-      // Fade: oldest dim, newest bright (warm gold)
-      const t = count > 1 ? i / (count - 1) : 1;
-      const a = t * t; // ease-in for tail
-      colors[i * 3 + 0] = 1.0 * a;
-      colors[i * 3 + 1] = 0.84 * a;
-      colors[i * 3 + 2] = 0.42 * a;
-    }
-    // Append current position so the trail reaches the live effector
-    if (count < cap) {
-      linear[count * 3 + 0] = sel.x;
-      linear[count * 3 + 1] = sel.y;
-      linear[count * 3 + 2] = sel.z;
-      colors[count * 3 + 0] = 1.0;
-      colors[count * 3 + 1] = 0.85;
-      colors[count * 3 + 2] = 0.5;
-    }
-    const posAttr = this.trailGeom.getAttribute('position') as THREE.BufferAttribute;
-    (posAttr.array as Float32Array).set(linear);
-    posAttr.needsUpdate = true;
-    (this.trailGeom.getAttribute('color') as THREE.BufferAttribute).needsUpdate = true;
-    this.trailGeom.setDrawRange(0, Math.min(cap, count + 1));
-  }
-
-  private _trailLinearScratch: Float32Array | null = null;
-
-  // Galaxy = a gravitationally-associated cluster of stars (with optional
-  // central/embedded BHs). Detected via union-find linkage: two stars are
-  // linked if within `galaxyLinkRadius` of each other. A connected component
-  // of >= `galaxyMinStars` is rendered as a single diffuse halo. This drops
-  // the previous "halo per BH" assumption (real galaxies don't need a BH,
-  // and post-merger galaxies have multiple BHs inside one halo).
-  //
-  // linkRadius widened to capture loose stellar associations (real dwarf
-  // galaxies span ~kpc with stars sparsely placed). minStars dropped to 3
-  // so small clusters still register as a halo.
-  private readonly galaxyLinkRadius = 18;
-  private readonly galaxyMinStars = 3;
-  private syncGalaxies(sim: Simulator): void {
-    const stars: Effector[] = [];
-    const bhs: Effector[] = [];
-    for (const e of sim.effectors) {
-      if (e.type === 'star') stars.push(e);
-      else if (e.type === 'blackhole') bhs.push(e);
-    }
-
-    // Find seen halo IDs this frame so we can reap stale ones at the end
-    const seenIds = new Set<string>();
-
-    if (stars.length >= this.galaxyMinStars) {
-      const n = stars.length;
-      if (!this.galaxyParentScratch || this.galaxyParentScratch.length < n) {
-        // Grow with headroom so we don't realloc on every minor star count bump.
-        this.galaxyParentScratch = new Int32Array(Math.max(n * 2, 32));
-      }
-      const parent = this.galaxyParentScratch;
-      for (let i = 0; i < n; i++) parent[i] = i;
-      const find = (x: number): number => {
-        while (parent[x] !== x) {
-          parent[x] = parent[parent[x]];
-          x = parent[x];
-        }
-        return x;
-      };
-      const linkR2 = this.galaxyLinkRadius * this.galaxyLinkRadius;
-      for (let i = 0; i < n; i++) {
-        const a = stars[i];
-        for (let j = i + 1; j < n; j++) {
-          const b = stars[j];
-          const dx = a.x - b.x;
-          const dy = a.y - b.y;
-          const dz = a.z - b.z;
-          if (dx * dx + dy * dy + dz * dz < linkR2) {
-            const ra = find(i), rb = find(j);
-            if (ra !== rb) parent[ra] = rb;
-          }
-        }
-      }
-
-      const components = new Map<number, number[]>();
-      for (let i = 0; i < n; i++) {
-        const r = find(i);
-        const list = components.get(r);
-        if (list) list.push(i); else components.set(r, [i]);
-      }
-
-      for (const [, memberIdx] of components) {
-        if (memberIdx.length < this.galaxyMinStars) continue;
-
-        // Stable ID = oldest member's birth time (galaxies don't lose identity
-        // when newer members join or old peripheral members drift away).
-        let oldest = stars[memberIdx[0]];
-        for (const i of memberIdx) {
-          if (stars[i].bornAt < oldest.bornAt) oldest = stars[i];
-        }
-        const id = `g-${Math.round(oldest.bornAt * 1000)}-${oldest.name ?? ''}`;
-        seenIds.add(id);
-
-        // Mass-weighted COM
-        let cx = 0, cy = 0, cz = 0, totM = 0;
-        for (const i of memberIdx) {
-          const s = stars[i];
-          cx += s.x * s.strength;
-          cy += s.y * s.strength;
-          cz += s.z * s.strength;
-          totM += s.strength;
-        }
-        if (totM <= 0) continue;
-        cx /= totM; cy /= totM; cz /= totM;
-
-        // Include nearby BHs in COM (they sit at galactic centers) and let
-        // them contribute to the halo extent — a post-merger galaxy with
-        // multiple BHs still reads as one halo.
-        const localBhs: Effector[] = [];
-        let bhM = 0;
-        for (const bh of bhs) {
-          const dx = bh.x - cx, dy = bh.y - cy, dz = bh.z - cz;
-          if (dx * dx + dy * dy + dz * dz < linkR2 * 2.25) {
-            localBhs.push(bh);
-            bhM += bh.strength;
-          }
-        }
-        if (localBhs.length > 0) {
-          // Re-center using BH mass too
-          let ncx = cx * totM, ncy = cy * totM, ncz = cz * totM;
-          for (const bh of localBhs) {
-            ncx += bh.x * bh.strength;
-            ncy += bh.y * bh.strength;
-            ncz += bh.z * bh.strength;
-          }
-          const total = totM + bhM;
-          cx = ncx / total; cy = ncy / total; cz = ncz / total;
-        }
-
-        // Radius = RMS distance of stars from COM, with a min floor.
-        // RMS is robust against single eccentric-orbit outliers (vs. max).
-        let sumR2 = 0;
-        for (const i of memberIdx) {
-          const s = stars[i];
-          const dx = s.x - cx;
-          const dy = s.y - cy;
-          const dz = s.z - cz;
-          sumR2 += dx * dx + dy * dy + dz * dz;
-        }
-        const rmsR = Math.sqrt(sumR2 / memberIdx.length);
-        const radius = Math.max(3.0, rmsR * 1.6 + 1.5);
-
-        // Bulk velocity (mass-weighted) so we measure rotation in the COM frame
-        let bvx = 0, bvy = 0, bvz = 0;
-        for (const i of memberIdx) {
-          const s = stars[i];
-          bvx += s.vx * s.strength;
-          bvy += s.vy * s.strength;
-          bvz += s.vz * s.strength;
-        }
-        bvx /= totM; bvy /= totM; bvz /= totM;
-
-        // Angular momentum L = Σ m·(r × v) about COM. Disks have large coherent
-        // L; elliptical/random-motion systems have |L| ~ 0.
-        let Lx = 0, Ly = 0, Lz = 0;
-        for (const i of memberIdx) {
-          const s = stars[i];
-          const rx = s.x - cx, ry = s.y - cy, rz = s.z - cz;
-          const vx = s.vx - bvx, vy = s.vy - bvy, vz = s.vz - bvz;
-          Lx += s.strength * (ry * vz - rz * vy);
-          Ly += s.strength * (rz * vx - rx * vz);
-          Lz += s.strength * (rx * vy - ry * vx);
-        }
-        const Lmag = Math.sqrt(Lx * Lx + Ly * Ly + Lz * Lz);
-
-        // Rotational support ≈ |L| / (M · R · σ_v). We approximate σ_v with the
-        // halo's RMS extent in lieu of a separate velocity-dispersion calc.
-        // Large value → disk; small → spheroidal.
-        const rotSupport = Lmag / Math.max(totM * radius, 1e-3);
-        const flatness = Math.min(0.65, Math.max(0, rotSupport * 0.45));
-        const polarR = radius * (1 - flatness);
-
-        let entry = this.galaxyHalos.get(id);
-        if (!entry) {
-          const hue = (this.hashGalaxyId(id) % 360) / 360;
-          const color = new THREE.Color().setHSL(hue, 0.55, 0.55);
-          entry = this.createGalaxyHalo(color);
-          this.galaxyHalos.set(id, entry);
-        }
-        entry.mesh.position.set(cx, cy, cz);
-
-        // Align mesh's Y axis with the L vector so the oblate scaling
-        // (radius, polarR, radius) sits perpendicular to the rotation axis.
-        if (Lmag > 1e-3) {
-          const inv = 1 / Lmag;
-          this.tmpL.set(Lx * inv, Ly * inv, Lz * inv);
-          entry.mesh.quaternion.setFromUnitVectors(this.tmpUp, this.tmpL);
-        } else {
-          entry.mesh.quaternion.identity();
-        }
-        entry.mesh.scale.set(radius, polarR, radius);
-
-        this.tmpSphere.center.set(cx, cy, cz);
-        this.tmpSphere.radius = radius;
-        entry.mesh.visible = this.visibility.galaxies && this.tmpFrustum.intersectsSphere(this.tmpSphere);
-      }
-    }
-
-    for (const [id, entry] of this.galaxyHalos) {
-      if (!seenIds.has(id)) {
-        this.scene.remove(entry.mesh);
-        entry.mesh.geometry.dispose();
-        entry.mat.dispose();
-        this.galaxyHalos.delete(id);
-      }
-    }
-  }
-
-  private createGalaxyHalo(color: THREE.Color): { mesh: THREE.Mesh; mat: THREE.ShaderMaterial } {
-    const geo = new THREE.SphereGeometry(1, 32, 24);
-    const mat = new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      transparent: true,
-      depthWrite: false,
-      uniforms: { uColor: { value: color } },
-      vertexShader: GALAXY_HALO_VERT,
-      fragmentShader: GALAXY_HALO_FRAG,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.frustumCulled = false;
-    mesh.visible = this.visibility.galaxies;
-    this.scene.add(mesh);
-    return { mesh, mat };
-  }
-
-  private hashGalaxyId(id: string): number {
-    let h = 5381;
-    for (let i = 0; i < id.length; i++) {
-      h = ((h << 5) + h + id.charCodeAt(i)) >>> 0;
-    }
-    return h & 0xffffff;
-  }
-
-  private syncOrbits(sim: Simulator): void {
-    if (!this.selectedOrbitGeom || !this.selectedOrbitPositions) return;
-    const haveLink = !!(this.selectedOrbitLink && this.selectedOrbitLinkGeom && this.selectedOrbitLinkPositions);
-
-    const clearAll = () => {
-      this.selectedOrbitGeom!.setDrawRange(0, 0);
-      if (haveLink) this.selectedOrbitLinkGeom!.setDrawRange(0, 0);
-    };
-
-    if (!this.visibility.orbits) { clearAll(); return; }
-    const sel = this.selectedEffector;
-    if (!sel || (sel.type !== 'star' && sel.type !== 'blackhole' && sel.type !== 'neutron_star')) {
-      clearAll();
-      return;
-    }
-
-    // Anything massive can act as a Kepler host — light BHs and NS still pull.
-    const massive: Effector[] = [];
-    for (const e of sim.effectors) {
-      if (e === sel) continue;
-      if (e.type === 'blackhole' || e.type === 'star' || e.type === 'neutron_star') {
-        massive.push(e);
-      }
-    }
-
-    const G = sim.effectorPairG;
-
-    // The effective central GM should include the diffuse DM halo + gas the
-    // body actually feels through Barnes-Hut self-gravity, not just the point
-    // mass of a single companion. We add an "environment boost" proportional
-    // to selfGravity so deeply-embedded bodies get a sensible orbit even
-    // when their pointmass companion is weak.
-    //
-    // Plus a Hubble-expansion compensation factor: lab-frame separation grew
-    // by effectorScaleFactor since Dark Energy began, which made PE = -GM/r
-    // shrink. Boost GM by the same factor so previously-bound orbits remain
-    // recognized as bound in the Kepler predictor.
-    const envBoost = (sim.selfGravity > 0 ? 1.0 + sim.selfGravity * 1.5 : 1.0)
-                   * sim.effectorScaleFactor;
-
-    let host: { x: number; y: number; z: number } | null = null;
-    let hostGM = 0, hostEnergy = 0;
-    let hostRx = 0, hostRy = 0, hostRz = 0;
-    let hostVx = 0, hostVy = 0, hostVz = 0;
-    let hostRMag = 0;
-
-    // Pass 1: any individual heavier body that produces a bound orbit.
-    for (const m of massive) {
-      if (m.strength < sel.strength * 0.5) continue; // need at least half our mass
-      const rxB = sel.x - m.x;
-      const ryB = sel.y - m.y;
-      const rzB = sel.z - m.z;
-      const rMagB = Math.sqrt(rxB * rxB + ryB * ryB + rzB * rzB);
-      if (rMagB < 1e-3) continue;
-      const vxB = sel.vx - m.vx;
-      const vyB = sel.vy - m.vy;
-      const vzB = sel.vz - m.vz;
-      const v2B = vxB * vxB + vyB * vyB + vzB * vzB;
-      const GMB = G * m.strength * envBoost;
-      const eB = 0.5 * v2B - GMB / rMagB;
-      if (eB >= 0) continue;
-      if (!host || eB < hostEnergy) {
-        host = m;
-        hostEnergy = eB; hostGM = GMB;
-        hostRx = rxB; hostRy = ryB; hostRz = rzB;
-        hostVx = vxB; hostVy = vyB; hostVz = vzB;
-        hostRMag = rMagB;
-      }
-    }
-
-    // Pass 2 (fallback): cluster center of mass. Works even with a single
-    // companion, and lets dwarf clusters / DM-bound stars show an orbit.
-    if (!host && massive.length >= 1) {
-      let mx = 0, my = 0, mz = 0, mvx = 0, mvy = 0, mvz = 0, totM = 0;
-      for (const m of massive) {
-        mx += m.x * m.strength;
-        my += m.y * m.strength;
-        mz += m.z * m.strength;
-        mvx += m.vx * m.strength;
-        mvy += m.vy * m.strength;
-        mvz += m.vz * m.strength;
-        totM += m.strength;
-      }
-      if (totM > 0) {
-        mx /= totM; my /= totM; mz /= totM;
-        mvx /= totM; mvy /= totM; mvz /= totM;
-        const rxC = sel.x - mx;
-        const ryC = sel.y - my;
-        const rzC = sel.z - mz;
-        const rMagC = Math.sqrt(rxC * rxC + ryC * ryC + rzC * rzC);
-        if (rMagC > 1e-3) {
-          const vxC = sel.vx - mvx;
-          const vyC = sel.vy - mvy;
-          const vzC = sel.vz - mvz;
-          const v2C = vxC * vxC + vyC * vyC + vzC * vzC;
-          // Inflate GM by the env boost too — bodies orbit the cluster +
-          // its embedded DM halo, not just visible stars.
-          const GMC = G * totM * envBoost * 1.3;
-          const eC = 0.5 * v2C - GMC / rMagC;
-          if (eC < 0) {
-            host = { x: mx, y: my, z: mz };
-            hostEnergy = eC; hostGM = GMC;
-            hostRx = rxC; hostRy = ryC; hostRz = rzC;
-            hostVx = vxC; hostVy = vyC; hostVz = vzC;
-            hostRMag = rMagC;
-          }
-        }
-      }
-    }
-
-    // No bound system found — body is unbound or in free streaming. The
-    // recorded trail (drawn by recordTrail) is the only valid indicator.
-    if (!host) { clearAll(); return; }
-
-    const GM = hostGM;
-    const rx = hostRx, ry = hostRy, rz = hostRz;
-    const vx = hostVx, vy = hostVy, vz = hostVz;
-    const rMag = hostRMag;
-    const a = -GM / (2 * hostEnergy);
-
-    const Lx = ry * vz - rz * vy;
-    const Ly = rz * vx - rx * vz;
-    const Lz = rx * vy - ry * vx;
-    if (Lx * Lx + Ly * Ly + Lz * Lz < 1e-6) { clearAll(); return; }
-
-    const evx = (vy * Lz - vz * Ly) / GM - rx / rMag;
-    const evy = (vz * Lx - vx * Lz) / GM - ry / rMag;
-    const evz = (vx * Ly - vy * Lx) / GM - rz / rMag;
-    const e = Math.sqrt(evx * evx + evy * evy + evz * evz);
-    // Allow highly eccentric orbits — only reject literally unbound.
-    if (e >= 0.99) { clearAll(); return; }
-
-    const eHatX = e > 1e-6 ? evx / e : rx / rMag;
-    const eHatY = e > 1e-6 ? evy / e : ry / rMag;
-    const eHatZ = e > 1e-6 ? evz / e : rz / rMag;
-    const pPx = Ly * eHatZ - Lz * eHatY;
-    const pPy = Lz * eHatX - Lx * eHatZ;
-    const pPz = Lx * eHatY - Ly * eHatX;
-    const pMag = Math.sqrt(pPx * pPx + pPy * pPy + pPz * pPz);
-    if (pMag < 1e-6) { clearAll(); return; }
-    const perpX = pPx / pMag;
-    const perpY = pPy / pMag;
-    const perpZ = pPz / pMag;
-
-    const segments = this.orbitSegments;
-    const semiLatus = a * (1 - e * e);
-    const selPositions = this.selectedOrbitPositions;
-    let write = 0;
-    let prevX = 0, prevY = 0, prevZ = 0;
-    for (let i = 0; i <= segments; i++) {
-      const theta = (2 * Math.PI * i) / segments;
-      const r = semiLatus / (1 + e * Math.cos(theta));
-      const cT = Math.cos(theta);
-      const sT = Math.sin(theta);
-      const x = host.x + r * (cT * eHatX + sT * perpX);
-      const y = host.y + r * (cT * eHatY + sT * perpY);
-      const z = host.z + r * (cT * eHatZ + sT * perpZ);
-      if (i > 0 && write + 1 < segments * 2) {
-        selPositions[write * 3 + 0] = prevX;
-        selPositions[write * 3 + 1] = prevY;
-        selPositions[write * 3 + 2] = prevZ;
-        write++;
-        selPositions[write * 3 + 0] = x;
-        selPositions[write * 3 + 1] = y;
-        selPositions[write * 3 + 2] = z;
-        write++;
-      }
-      prevX = x; prevY = y; prevZ = z;
-    }
-    this.selectedOrbitGeom.setDrawRange(0, write);
-    (this.selectedOrbitGeom.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-
-    if (haveLink) {
-      const p = this.selectedOrbitLinkPositions!;
-      p[0] = sel.x; p[1] = sel.y; p[2] = sel.z;
-      p[3] = host.x; p[4] = host.y; p[5] = host.z;
-      this.selectedOrbitLinkGeom!.setDrawRange(0, 2);
-      (this.selectedOrbitLinkGeom!.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-      this.selectedOrbitLink!.computeLineDistances();
     }
   }
 
