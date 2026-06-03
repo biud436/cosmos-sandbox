@@ -1,43 +1,16 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { SPECIES } from '../physics/types';
-import { Effector, EffectorType, Simulator } from '../physics/Simulator';
+import { Effector, Simulator } from '../physics/Simulator';
 import { GraphicsSettings } from './GraphicsSettings';
 import {
   SKY_NEBULA_VERT, SKY_NEBULA_FRAG, BOUNDARY_SHELL_VERT, BOUNDARY_SHELL_FRAG,
-  GAS_VERT, GAS_FRAG, GAS_HALO_VERT, GAS_HALO_FRAG,
-  EFFECTOR_VERT, EFFECTOR_FRAG,
 } from './shaders';
 import { BondRenderer } from './renderers/BondRenderer';
 import { GalaxyRenderer } from './renderers/GalaxyRenderer';
 import { OrbitTrailRenderer } from './renderers/OrbitTrailRenderer';
-
-// Mass → spectral class color, approximating O/B/A/F/G/K/M sequence.
-// Mass thresholds chosen for the compressed sim scale (not solar units).
-// Colors picked from Planck blackbody at the corresponding effective temp,
-// then desaturated slightly so massive stars don't go pure-blue.
-function spectralColor(mass: number): [number, number, number] {
-  if (mass < 12)  return [1.00, 0.55, 0.42]; // M-dwarf  (~3000K)
-  if (mass < 22)  return [1.00, 0.72, 0.50]; // K        (~4500K)
-  if (mass < 40)  return [1.00, 0.90, 0.72]; // G (sun)  (~5800K)
-  if (mass < 70)  return [1.00, 0.98, 0.92]; // F/A      (~7000–8500K)
-  if (mass < 130) return [0.82, 0.90, 1.00]; // B        (~15000K)
-  return            [0.65, 0.80, 1.00];      // O/Wolf-Rayet (~30000K+)
-}
-
-// Metallicity tint: low-Z (Pop III) stars have less metal-line opacity in
-// the photosphere → photosphere appears subtly bluer at the same effective
-// temperature. High-Z stars look slightly warmer/redder. Effect is intentionally
-// subtle so the dominant color signal stays the spectral class.
-function applyMetallicityTint(rgb: [number, number, number], Z: number): [number, number, number] {
-  // Map Z ∈ [0, 1] to t ∈ [-1, +1] (pristine → enriched)
-  const t = Z * 2 - 1;
-  return [
-    rgb[0] * (1 + t * 0.08),
-    rgb[1] * (1 - t * 0.02),
-    rgb[2] * (1 - t * 0.08),
-  ];
-}
+import { EffectorRenderer } from './renderers/EffectorRenderer';
+import { ParticleRenderer } from './renderers/ParticleRenderer';
 
 export class Scene {
   readonly scene: THREE.Scene;
@@ -46,19 +19,10 @@ export class Scene {
   readonly controls: OrbitControls;
 
   private readonly boxHalf: number;
-  // High-LOD particle meshes (icosa detail=2, 320 tri) — used for particles
-  // whose projected pixel size exceeds the LOD threshold. Distant particles
-  // are routed to speciesMeshesLo (detail=0, 20 tri) instead, dropping ~16x
-  // the triangle work for tiny dots that wouldn't show subdivision anyway.
-  private readonly speciesMeshes: THREE.InstancedMesh[] = [];
-  private readonly speciesMeshesLo: THREE.InstancedMesh[] = [];
-  private readonly speciesCapacity: number[];
-  private readonly speciesCountsLoScratch: Int32Array = new Int32Array(SPECIES.length);
   // Projection scale (= canvasH / (2 * tan(fovY/2))) cached for the
   // solid-mode LOD pick. pixelSize ≈ radius * projScaleY / dist.
-  // Refreshed by onResize / constructor.
+  // Refreshed by onResize / constructor, then handed to ParticleRenderer.sync.
   private projScaleY = 1;
-  private readonly tmpMat = new THREE.Matrix4();
   private boxMesh: THREE.LineSegments | null = null;
   private gridMesh: THREE.GridHelper | null = null;
   private universeMesh: THREE.LineSegments | null = null;
@@ -79,23 +43,9 @@ export class Scene {
   };
   private galaxies!: GalaxyRenderer;
   private orbits!: OrbitTrailRenderer;
-  private effectorViews = new Map<Effector, {
-    group: THREE.Group;
-    mat: THREE.ShaderMaterial;
-    selectionRing: THREE.Mesh;
-    influenceRing: THREE.Mesh | null;
-    lastConsumed?: number;
-    accretion?: number;
-  }>();
-  private effectorClock = 0;
+  private effectors!: EffectorRenderer;
   private selectedEffector: Effector | null = null;
-  private renderMode: 'solid' | 'gas' = 'solid';
-  private gasPoints: THREE.Points | null = null;
-  private gasHaloPoints: THREE.Points | null = null;
-  private gasGeom: THREE.BufferGeometry | null = null;
-  private gasPositions: Float32Array | null = null;
-  private gasColors: Float32Array | null = null;
-  private gasSizes: Float32Array | null = null;
+  private particles!: ParticleRenderer;
   private readonly maxParticlesTotal: number;
   // Far-field starfield + nebula. Parented to a group that tracks the camera
   // each frame so the player always feels surrounded — otherwise far zooms
@@ -111,7 +61,6 @@ export class Scene {
   constructor(container: HTMLElement, boxHalf: number, maxPerSpecies: number, gfx: GraphicsSettings) {
     this.graphicsSettings = gfx;
     this.boxHalf = boxHalf;
-    this.speciesCapacity = SPECIES.map(() => maxPerSpecies);
     this.maxParticlesTotal = maxPerSpecies * SPECIES.length;
 
     this.scene = new THREE.Scene();
@@ -143,11 +92,11 @@ export class Scene {
     this.buildEnvironment();
     this.buildUniverseBoundary();
     this.buildStarfield();
-    this.buildParticleMeshes();
-    this.buildGasRenderer();
+    this.particles = new ParticleRenderer(this.scene, maxPerSpecies, this.renderer.getPixelRatio() * window.innerHeight * 0.5);
     this.bonds = new BondRenderer(this.scene, this.maxParticlesTotal);
     this.galaxies = new GalaxyRenderer(this.scene);
     this.orbits = new OrbitTrailRenderer(this.scene, this.visibility.orbits);
+    this.effectors = new EffectorRenderer(this.scene, this.camera, this.renderer.domElement);
 
     const ro = new ResizeObserver(() => this.onResize(container));
     ro.observe(container);
@@ -254,10 +203,7 @@ export class Scene {
     this.visibility[group] = visible;
     switch (group) {
       case 'particles':
-        for (const m of this.speciesMeshes) m.visible = visible && this.renderMode === 'solid';
-        for (const m of this.speciesMeshesLo) m.visible = visible && this.renderMode === 'solid';
-        if (this.gasPoints) this.gasPoints.visible = visible && this.renderMode === 'gas';
-        if (this.gasHaloPoints) this.gasHaloPoints.visible = visible && this.renderMode === 'gas';
+        this.particles.setVisible(visible);
         break;
       case 'bonds':
         this.bonds.setVisible(visible);
@@ -321,74 +267,8 @@ export class Scene {
     this.scene.add(this.boxMesh);
   }
 
-  private buildGasRenderer(): void {
-    const cap = this.maxParticlesTotal;
-    const positions = new Float32Array(cap * 3);
-    const colors = new Float32Array(cap * 3);
-    const sizes = new Float32Array(cap);
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geom.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-    geom.setDrawRange(0, 0);
-
-    const mat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: {
-        uPixelScale: { value: this.renderer.getPixelRatio() * window.innerHeight * 0.5 },
-        uRedshiftNear: { value: 80 },
-        uRedshiftFar: { value: 500 },
-      },
-      vertexShader: GAS_VERT,
-      fragmentShader: GAS_FRAG,
-    });
-
-    const points = new THREE.Points(geom, mat);
-    points.frustumCulled = false;
-    points.visible = false;
-    this.scene.add(points);
-
-    // Macro halo pass: same buffers, much larger sprite, no wisp noise.
-    // Heavy overlap of these big soft Gaussians makes nearby particles read
-    // as a single nebula cluster rather than discrete dots.
-    const haloMat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: {
-        uPixelScale: { value: this.renderer.getPixelRatio() * window.innerHeight * 0.5 },
-        uRedshiftNear: { value: 80 },
-        uRedshiftFar: { value: 500 },
-        uSizeMul: { value: 3.2 },
-      },
-      vertexShader: GAS_HALO_VERT,
-      fragmentShader: GAS_HALO_FRAG,
-    });
-    const halo = new THREE.Points(geom, haloMat);
-    halo.frustumCulled = false;
-    halo.visible = false;
-    halo.renderOrder = -1; // draw behind the detail pass
-    this.scene.add(halo);
-
-    this.gasGeom = geom;
-    this.gasPoints = points;
-    this.gasHaloPoints = halo;
-    this.gasPositions = positions;
-    this.gasColors = colors;
-    this.gasSizes = sizes;
-  }
-
   setRenderMode(mode: 'solid' | 'gas'): void {
-    if (mode === this.renderMode) return;
-    this.renderMode = mode;
-    const useSolid = mode === 'solid';
-    const show = this.visibility.particles;
-    for (const m of this.speciesMeshes) m.visible = show && useSolid;
-    for (const m of this.speciesMeshesLo) m.visible = show && useSolid;
-    if (this.gasPoints) this.gasPoints.visible = show && !useSolid;
-    if (this.gasHaloPoints) this.gasHaloPoints.visible = show && !useSolid;
+    this.particles.setRenderMode(mode, this.visibility.particles);
   }
 
   setEnvironmentVisible(visible: boolean): void {
@@ -436,44 +316,10 @@ export class Scene {
     this.buildStarfield();
   }
 
-  private buildParticleMeshes(): void {
-    // High LOD: detail=2 = 320 triangles per sphere. Looks correctly round
-    // for particles big enough to occupy >8 screen pixels.
-    const sphereGeoHi = new THREE.IcosahedronGeometry(1, 2);
-    // Low LOD: detail=0 = 20 triangles. Indistinguishable from the hi-LOD
-    // mesh once a particle shrinks under ~6px on screen, but renders 16x
-    // cheaper. Materially the same per-instance setMatrixAt cost, so the
-    // CPU side stays flat.
-    const sphereGeoLo = new THREE.IcosahedronGeometry(1, 0);
-    for (let i = 0; i < SPECIES.length; i++) {
-      const species = SPECIES[i];
-      const matHi = new THREE.MeshBasicMaterial({ color: species.color });
-      const meshHi = new THREE.InstancedMesh(sphereGeoHi, matHi, this.speciesCapacity[i]);
-      meshHi.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      meshHi.count = 0;
-      meshHi.frustumCulled = false;
-      this.scene.add(meshHi);
-      this.speciesMeshes.push(meshHi);
-
-      const matLo = new THREE.MeshBasicMaterial({ color: species.color });
-      const meshLo = new THREE.InstancedMesh(sphereGeoLo, matLo, this.speciesCapacity[i]);
-      meshLo.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      meshLo.count = 0;
-      meshLo.frustumCulled = false;
-      this.scene.add(meshLo);
-      this.speciesMeshesLo.push(meshLo);
-    }
-  }
-
   private readonly tmpFrustum = new THREE.Frustum();
   private readonly tmpProjView = new THREE.Matrix4();
-  private readonly tmpSphere = new THREE.Sphere();
-  // Reused per-frame scratch buffers — avoid GC churn in the 60Hz sync path.
-  private readonly speciesCountsScratch: Int32Array = new Int32Array(SPECIES.length);
-  private readonly aliveEffectorScratch: Set<Effector> = new Set<Effector>();
 
   sync(sim: Simulator, frameDt = 1 / 60): void {
-    const n = sim.count;
     this.setUniverseScale(sim.scaleFactor);
 
     // Build frustum FIRST so all syncs can cull against it
@@ -482,316 +328,15 @@ export class Scene {
     this.tmpFrustum.setFromProjectionMatrix(this.tmpProjView);
 
     this.bonds.sync(sim);
-    this.syncEffectors(sim, frameDt);
+    this.effectors.sync(sim, this.tmpFrustum, this.visibility, this.selectedEffector, frameDt);
     this.orbits.sync(sim, this.selectedEffector, this.visibility.orbits, frameDt);
     this.galaxies.sync(sim, this.tmpFrustum, this.visibility.galaxies, frameDt);
 
-    if (this.renderMode === 'solid') {
-      const counts = this.speciesCountsScratch;
-      const countsLo = this.speciesCountsLoScratch;
-      counts.fill(0);
-      countsLo.fill(0);
-      // pixelSize ≈ radius * projScaleY / dist. Threshold pulled from the
-      // live quality settings — smaller = more particles upgraded to hi-LOD
-      // (looks crisper; costs more triangles). Squared for cheap comparison:
-      // (radius * projScaleY)² < THRESH² * dist².
-      const lodPixelThresh = this.graphicsSettings.particleLodPx;
-      const lodCoef = this.projScaleY / lodPixelThresh;
-      const camX = this.camera.position.x;
-      const camY = this.camera.position.y;
-      const camZ = this.camera.position.z;
-      for (let i = 0; i < n; i++) {
-        const s = sim.species[i];
-        const px = sim.positions[i * 3 + 0];
-        const py = sim.positions[i * 3 + 1];
-        const pz = sim.positions[i * 3 + 2];
-        const radius = SPECIES[s].sigma * 1.1;
-        this.tmpSphere.center.set(px, py, pz);
-        this.tmpSphere.radius = radius;
-        if (!this.tmpFrustum.intersectsSphere(this.tmpSphere)) continue;
-        // LOD pick: hi if (radius * lodCoef) > dist, else lo.
-        const dx = px - camX, dy = py - camY, dz = pz - camZ;
-        const dist2 = dx * dx + dy * dy + dz * dz;
-        const cutoff = radius * lodCoef;
-        const useHi = cutoff * cutoff > dist2;
-        const targetMesh = useHi ? this.speciesMeshes[s] : this.speciesMeshesLo[s];
-        const targetCounts = useHi ? counts : countsLo;
-        const slot = targetCounts[s]++;
-        if (slot >= this.speciesCapacity[s]) continue;
-        this.tmpMat.makeScale(radius, radius, radius);
-        this.tmpMat.setPosition(px, py, pz);
-        targetMesh.setMatrixAt(slot, this.tmpMat);
-      }
-      for (let s = 0; s < SPECIES.length; s++) {
-        this.speciesMeshes[s].count = counts[s];
-        if (counts[s] > 0) this.speciesMeshes[s].instanceMatrix.needsUpdate = true;
-        this.speciesMeshesLo[s].count = countsLo[s];
-        if (countsLo[s] > 0) this.speciesMeshesLo[s].instanceMatrix.needsUpdate = true;
-      }
-    } else if (this.gasGeom && this.gasPositions && this.gasColors && this.gasSizes) {
-      let write = 0;
-      const cap = Math.min(n, this.maxParticlesTotal);
-      for (let i = 0; i < cap; i++) {
-        const s = sim.species[i];
-        const sp = SPECIES[s];
-        const px = sim.positions[i * 3 + 0];
-        const py = sim.positions[i * 3 + 1];
-        const pz = sim.positions[i * 3 + 2];
-        this.tmpSphere.center.set(px, py, pz);
-        this.tmpSphere.radius = sp.sigma * 1.5;
-        if (!this.tmpFrustum.intersectsSphere(this.tmpSphere)) continue;
-        const isDM = sp.name === 'DM';
-        this.gasPositions[write * 3 + 0] = px;
-        this.gasPositions[write * 3 + 1] = py;
-        this.gasPositions[write * 3 + 2] = pz;
-        const r = ((sp.color >> 16) & 0xff) / 255;
-        const g = ((sp.color >> 8) & 0xff) / 255;
-        const b = (sp.color & 0xff) / 255;
-        // DM: barely visible (halo hint), baryonic gas: full intensity
-        const dim = isDM ? 0.28 : 0.85;
-        this.gasColors[write * 3 + 0] = r * dim;
-        this.gasColors[write * 3 + 1] = g * dim;
-        this.gasColors[write * 3 + 2] = b * dim;
-        // Large, heavily-overlapping point sprites so additive blending forms
-        // diffuse nebulae rather than visibly distinct particles.
-        this.gasSizes[write] = sp.sigma * (isDM ? 10.0 : 18.0);
-        write++;
-      }
-      this.gasGeom.setDrawRange(0, write);
-      // Only upload the slice that was actually written. updateRange tells
-      // three.js to skip the rest of the (possibly large) attribute buffer.
-      if (write > 0) {
-        const pos = this.gasGeom.getAttribute('position') as THREE.BufferAttribute;
-        const col = this.gasGeom.getAttribute('color') as THREE.BufferAttribute;
-        const sz  = this.gasGeom.getAttribute('size')  as THREE.BufferAttribute;
-        pos.clearUpdateRanges(); pos.addUpdateRange(0, write * 3); pos.needsUpdate = true;
-        col.clearUpdateRanges(); col.addUpdateRange(0, write * 3); col.needsUpdate = true;
-        sz.clearUpdateRanges();  sz.addUpdateRange(0, write);      sz.needsUpdate  = true;
-      }
-    }
-  }
-
-  private visibilityKeyFor(type: EffectorType): keyof Scene['visibility'] {
-    switch (type) {
-      case 'star': return 'stars';
-      case 'blackhole': return 'blackholes';
-      case 'repulsor': return 'repulsors';
-      case 'freezer': return 'freezers';
-      case 'nebula': return 'nebulae';
-      case 'neutron_star': return 'neutronStars';
-    }
-  }
-
-  private syncEffectors(sim: Simulator, frameDt: number): void {
-    this.effectorClock += frameDt;
-    const alive = this.aliveEffectorScratch;
-    alive.clear();
-    for (const eff of sim.effectors) alive.add(eff);
-    for (const [eff, view] of this.effectorViews) {
-      if (!alive.has(eff)) {
-        this.scene.remove(view.group);
-        this.effectorViews.delete(eff);
-      }
-    }
-    const camPos = this.camera.position;
-    const rsNear = 80;
-    const rsFar = 500;
-    for (const eff of sim.effectors) {
-      let view = this.effectorViews.get(eff);
-      if (!view) {
-        view = this.createEffectorView(eff.type);
-        this.effectorViews.set(eff, view);
-      }
-      const typeVisible = this.visibility[this.visibilityKeyFor(eff.type)];
-      // Stars get a much larger visual halo so they read as actual stars and
-      // dwarf the planets in their system (Sun:Jupiter ≈ 10:1 in real life;
-      // 4× of the base 1.6 puts gas giants at ~25% of their host's visual
-      // size — close enough to register as "different class of object").
-      //
-      // Nebulae are diffuse interstellar clouds spanning light-years, so they
-      // must dwarf the stars embedded in them. 8× is paired with shader noise
-      // (irregular feathered silhouette) so the result reads as a wispy cloud
-      // volume, not a flat disk. Previously the nebula was a 0.5× compact
-      // disk smaller than stars, which is physically backward.
-      const scaleBoost =
-        eff.type === 'star' ? 4.0 :
-        eff.type === 'nebula' ? 8.0 :
-        eff.type === 'neutron_star' ? 2.0 :
-        1.0;
-      const visualR = eff.radius * scaleBoost * 3.0;
-      this.tmpSphere.center.set(eff.x, eff.y, eff.z);
-      this.tmpSphere.radius = visualR;
-      const inFrustum = this.tmpFrustum.intersectsSphere(this.tmpSphere);
-      view.group.visible = typeVisible && inFrustum;
-      if (!view.group.visible) continue;
-      view.group.position.set(eff.x, eff.y, eff.z);
-      view.group.scale.setScalar(eff.radius * scaleBoost);
-      view.group.lookAt(this.camera.position);
-      view.mat.uniforms.uTime.value = this.effectorClock;
-      if (view.mat.uniforms.uRedshift) {
-        const dx = eff.x - camPos.x;
-        const dy = eff.y - camPos.y;
-        const dz = eff.z - camPos.z;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const z = Math.min(1, Math.max(0, (dist - rsNear) / (rsFar - rsNear)));
-        view.mat.uniforms.uRedshift.value = z;
-      }
-      if (view.mat.uniforms.uMass) {
-        view.mat.uniforms.uMass.value = eff.strength;
-      }
-      // Per-effector seed for shader noise decorrelation. Stable: derives
-      // from eff.id only, so the same nebula keeps the same wisp pattern
-      // across frames and re-renders.
-      if (view.mat.uniforms.uSeed) {
-        view.mat.uniforms.uSeed.value = (eff.id * 0.1729) % 1.0;
-      }
-
-      // Stellar spectral type + metallicity tint: outer color follows the
-      // star's mass-derived effective temperature, with a subtle blue shift
-      // for Pop III (Z=0) and warm shift for late-generation Pop I.
-      if (eff.type === 'star' && view.mat.uniforms.uColor) {
-        const spectral = spectralColor(eff.strength);
-        const tinted = applyMetallicityTint(spectral, eff.metallicity ?? 0);
-        (view.mat.uniforms.uColor.value as THREE.Color).setRGB(tinted[0], tinted[1], tinted[2]);
-      }
-
-      // BH accretion activity: low-pass filter of consumed-per-frame so the
-      // glow ramps up smoothly while gas is falling in (AGN/quasar mode) and
-      // fades out when the BH is dormant.
-      if (eff.type === 'blackhole' && view.mat.uniforms.uAccretion) {
-        const lastConsumed = view.lastConsumed ?? eff.consumed;
-        const delta = Math.max(0, eff.consumed - lastConsumed);
-        view.lastConsumed = eff.consumed;
-        const target = Math.min(1, delta * 0.35);
-        const prev = view.accretion ?? 0;
-        const smoothed = prev * 0.85 + target * 0.15;
-        view.accretion = smoothed;
-        view.mat.uniforms.uAccretion.value = smoothed;
-      }
-      const selected = eff === this.selectedEffector;
-      view.selectionRing.visible = selected;
-      if (selected) {
-        (view.selectionRing.material as THREE.MeshBasicMaterial).opacity = 0.4 + 0.3 * Math.sin(this.effectorClock * 5);
-      }
-      if (view.influenceRing) {
-        view.influenceRing.visible = selected;
-        if (selected) {
-          (view.influenceRing.material as THREE.MeshBasicMaterial).opacity = 0.12 + 0.06 * Math.sin(this.effectorClock * 2);
-        }
-      }
-    }
-  }
-
-  private createEffectorView(type: EffectorType): { group: THREE.Group; mat: THREE.ShaderMaterial; selectionRing: THREE.Mesh; influenceRing: THREE.Mesh | null } {
-    const group = new THREE.Group();
-    group.userData.pickable = true;
-
-    // Core sphere color + visibility per effector type (presentation data; the
-    // aura fragment shader itself lives in shaders/effectors as EFFECTOR_FRAG).
-    const CORE: Record<EffectorType, { color: number; visible: boolean }> = {
-      blackhole:    { color: 0x000000, visible: true },
-      star:         { color: 0xffe89a, visible: true },
-      repulsor:     { color: 0xff6644, visible: true },
-      freezer:      { color: 0xaaddff, visible: false },
-      neutron_star: { color: 0xcceeff, visible: false },
-      nebula:       { color: 0xff88aa, visible: false },
-    };
-    const coreColor = CORE[type].color;
-    const coreVisible = CORE[type].visible;
-    const fragmentShader = EFFECTOR_FRAG[type];
-
-    if (coreVisible) {
-      const core = new THREE.Mesh(new THREE.SphereGeometry(type === 'blackhole' ? 1.0 : 0.7, 24, 24),
-        new THREE.MeshBasicMaterial({ color: coreColor }));
-      group.add(core);
-    }
-
-    let influenceRing: THREE.Mesh | null = null;
-    if (type === 'blackhole') {
-      const horizonGeo = new THREE.SphereGeometry(1.0, 24, 16);
-      const horizonMat = new THREE.MeshBasicMaterial({
-        color: 0xff4422,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.18,
-        depthWrite: false,
-      });
-      const horizonMesh = new THREE.Mesh(horizonGeo, horizonMat);
-      group.add(horizonMesh);
-
-      const infRingGeo = new THREE.RingGeometry(2.85, 3.0, 64);
-      const infRingMat = new THREE.MeshBasicMaterial({
-        color: 0xff8855,
-        transparent: true,
-        opacity: 0.12,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      influenceRing = new THREE.Mesh(infRingGeo, infRingMat);
-      influenceRing.visible = false;
-      group.add(influenceRing);
-    }
-
-    const mat = new THREE.ShaderMaterial({
-      side: THREE.DoubleSide,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: {
-        uTime: { value: 0 },
-        uRedshift: { value: 0 },
-        uMass: { value: 0 },
-        uColor: { value: new THREE.Color(1.0, 0.92, 0.78) },
-        uAccretion: { value: 0 },
-        // Per-effector seed (set at construction from eff.id) used by the
-        // nebula shader to decorrelate its noise field. Other types ignore it.
-        uSeed: { value: 0 },
-      },
-      vertexShader: EFFECTOR_VERT,
-      fragmentShader,
-    });
-    const aura = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), mat);
-    group.add(aura);
-
-    const ringGeo = new THREE.RingGeometry(1.6, 1.85, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x5499f7,
-      transparent: true,
-      opacity: 0.6,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const selectionRing = new THREE.Mesh(ringGeo, ringMat);
-    selectionRing.visible = false;
-    group.add(selectionRing);
-
-    this.scene.add(group);
-    return { group, mat, selectionRing, influenceRing };
+    this.particles.sync(sim, this.tmpFrustum, this.camera, this.projScaleY, this.graphicsSettings.particleLodPx);
   }
 
   pickEffector(clientX: number, clientY: number, sim: Simulator): Effector | null {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
-    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
-    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
-    const raycaster = new THREE.Raycaster();
-    raycaster.params.Line = { threshold: 1 } as any;
-    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
-    let bestEff: Effector | null = null;
-    let bestT = Infinity;
-    for (const eff of sim.effectors) {
-      const center = new THREE.Vector3(eff.x, eff.y, eff.z);
-      const sphere = new THREE.Sphere(center, eff.radius * 1.2);
-      const hit = new THREE.Vector3();
-      if (raycaster.ray.intersectSphere(sphere, hit)) {
-        const t = raycaster.ray.origin.distanceTo(hit);
-        if (t < bestT) {
-          bestT = t;
-          bestEff = eff;
-        }
-      }
-    }
-    return bestEff;
+    return this.effectors.pick(clientX, clientY, sim);
   }
 
   setSelectedEffector(eff: Effector | null): void {
@@ -1029,13 +574,7 @@ export class Scene {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    const pixelScale = this.renderer.getPixelRatio() * h * 0.5;
-    if (this.gasPoints) {
-      (this.gasPoints.material as THREE.ShaderMaterial).uniforms.uPixelScale.value = pixelScale;
-    }
-    if (this.gasHaloPoints) {
-      (this.gasHaloPoints.material as THREE.ShaderMaterial).uniforms.uPixelScale.value = pixelScale;
-    }
+    this.particles.setPixelScale(this.renderer.getPixelRatio() * h * 0.5);
     // Half-height of the canvas in pixels, divided by tan(fovY/2) — the
     // projection scale used in solid-mode LOD: pixel_radius ≈ radius * projScaleY / dist.
     const fovYRad = this.camera.fov * Math.PI / 180;
