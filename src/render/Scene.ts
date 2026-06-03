@@ -4,13 +4,14 @@ import { SPECIES } from '../physics/types';
 import { Effector, Simulator } from '../physics/Simulator';
 import { GraphicsSettings } from './GraphicsSettings';
 import {
-  SKY_NEBULA_VERT, SKY_NEBULA_FRAG, BOUNDARY_SHELL_VERT, BOUNDARY_SHELL_FRAG,
+  BOUNDARY_SHELL_VERT, BOUNDARY_SHELL_FRAG,
 } from './shaders';
 import { BondRenderer } from './renderers/BondRenderer';
 import { GalaxyRenderer } from './renderers/GalaxyRenderer';
 import { OrbitTrailRenderer } from './renderers/OrbitTrailRenderer';
 import { EffectorRenderer } from './renderers/EffectorRenderer';
 import { ParticleRenderer } from './renderers/ParticleRenderer';
+import { StarfieldRenderer } from './renderers/StarfieldRenderer';
 
 export class Scene {
   readonly scene: THREE.Scene;
@@ -47,11 +48,7 @@ export class Scene {
   private selectedEffector: Effector | null = null;
   private particles!: ParticleRenderer;
   private readonly maxParticlesTotal: number;
-  // Far-field starfield + nebula. Parented to a group that tracks the camera
-  // each frame so the player always feels surrounded — otherwise far zooms
-  // or Hubble expansion push the camera outside the fixed-radius shell and
-  // half the sky goes dark.
-  private skyGroup: THREE.Group | null = null;
+  private starfield!: StarfieldRenderer;
 
   /** Live graphics settings — mutated in place by setQualityPreset(). Knobs
    *  read by hot paths (LOD threshold, etc.) dereference through this so
@@ -91,7 +88,7 @@ export class Scene {
 
     this.buildEnvironment();
     this.buildUniverseBoundary();
-    this.buildStarfield();
+    this.starfield = new StarfieldRenderer(this.scene, boxHalf, gfx.starfieldCount);
     this.particles = new ParticleRenderer(this.scene, maxPerSpecies, this.renderer.getPixelRatio() * window.innerHeight * 0.5);
     this.bonds = new BondRenderer(this.scene, this.maxParticlesTotal);
     this.galaxies = new GalaxyRenderer(this.scene);
@@ -102,67 +99,6 @@ export class Scene {
     ro.observe(container);
     // Initialize projScaleY / canvasH for LOD before the first frame runs.
     this.onResize(container);
-  }
-
-  private buildStarfield(): void {
-    const skyGroup = new THREE.Group();
-    skyGroup.frustumCulled = false;
-    this.scene.add(skyGroup);
-    this.skyGroup = skyGroup;
-    const farR = this.boxHalf * 18;
-    const count = this.graphicsSettings.starfieldCount;
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    const tint = [
-      [1.0, 1.0, 1.0],
-      [0.75, 0.85, 1.0],
-      [1.0, 0.9, 0.75],
-      [1.0, 0.7, 0.7],
-    ];
-    for (let i = 0; i < count; i++) {
-      const u = Math.random() * 2 - 1;
-      const t = Math.random() * Math.PI * 2;
-      const s = Math.sqrt(1 - u * u);
-      const r = farR * (0.7 + Math.random() * 0.6);
-      positions[i * 3 + 0] = r * s * Math.cos(t);
-      positions[i * 3 + 1] = r * u;
-      positions[i * 3 + 2] = r * s * Math.sin(t);
-      const c = tint[(Math.random() * tint.length) | 0];
-      const k = 0.4 + Math.random() * 0.6;
-      colors[i * 3 + 0] = c[0] * k;
-      colors[i * 3 + 1] = c[1] * k;
-      colors[i * 3 + 2] = c[2] * k;
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    const mat = new THREE.PointsMaterial({
-      size: 0.5,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-    });
-    const stars = new THREE.Points(geo, mat);
-    stars.frustumCulled = false;
-    skyGroup.add(stars);
-
-    const nebulaGeo = new THREE.SphereGeometry(farR * 0.95, 32, 16);
-    const nebulaMat = new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      transparent: true,
-      depthWrite: false,
-      uniforms: {
-        colorA: { value: new THREE.Color(0x2a1d4a) },
-        colorB: { value: new THREE.Color(0x0a1a2e) },
-      },
-      vertexShader: SKY_NEBULA_VERT,
-      fragmentShader: SKY_NEBULA_FRAG,
-    });
-    const nebula = new THREE.Mesh(nebulaGeo, nebulaMat);
-    nebula.frustumCulled = false;
-    skyGroup.add(nebula);
   }
 
   private buildUniverseBoundary(): void {
@@ -289,31 +225,11 @@ export class Scene {
     this.currentPixelRatio = this.basePixelRatio;
     this.renderer.setPixelRatio(this.currentPixelRatio);
     // Starfield count change requires a rebuild — cheap (a few thousand verts).
-    if (prev.starfieldCount !== next.starfieldCount && this.skyGroup) {
-      this.rebuildStarfield();
+    if (prev.starfieldCount !== next.starfieldCount) {
+      this.starfield.rebuild(next.starfieldCount);
     }
     // AA can't change at runtime. Report mismatch so the caller can toast.
     return prev.antialias !== next.antialias;
-  }
-
-  /** Tear down the existing starfield + skybox dome and rebuild from the
-   *  current settings. Used when the player changes density at runtime. */
-  private rebuildStarfield(): void {
-    if (!this.skyGroup) return;
-    // Dispose children of skyGroup (the Points + the inner-shell nebula
-    // mesh). Their geometries/materials are one-off per build.
-    for (const child of [...this.skyGroup.children]) {
-      this.skyGroup.remove(child);
-      const m = child as THREE.Mesh | THREE.Points;
-      const geo = (m.geometry as THREE.BufferGeometry | undefined);
-      if (geo) geo.dispose();
-      const mat = (m.material as THREE.Material | THREE.Material[] | undefined);
-      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-      else if (mat) mat.dispose();
-    }
-    this.scene.remove(this.skyGroup);
-    this.skyGroup = null;
-    this.buildStarfield();
   }
 
   private readonly tmpFrustum = new THREE.Frustum();
@@ -518,7 +434,7 @@ export class Scene {
       this.updateCameraFollow();
       this.controls.update();
     }
-    if (this.skyGroup) this.skyGroup.position.copy(this.camera.position);
+    this.starfield.trackCamera(this.camera.position);
     this.renderer.render(this.scene, this.camera);
   }
 
