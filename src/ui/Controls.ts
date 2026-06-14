@@ -149,6 +149,10 @@ export class Controls {
     folder.add(this.sim, 'bhInspiralRange', 1, 30, 0.5).name('BH inspiral 범위').listen();
     folder.add(this.sim, 'blackHoleG', 0, 4.0, 0.05).name('블랙홀 → 입자 G').listen();
     folder.add(this.sim, 'starG', 0, 4.0, 0.05).name('별 → 입자 G').listen();
+    folder.add(this.sim, 'stellarWind', 0, 2, 0.01).name('항성풍 복사압 (×L)').listen();
+    folder.add(this.sim, 'stellarWindRange', 1, 12, 0.5).name('항성풍 도달 배율').listen();
+    folder.add(this.sim, 'bhFeedback', 0, 50, 1).name('AGN 강착 피드백').listen();
+    folder.add(this.sim, 'bhFeedbackRange', 1, 16, 0.5).name('AGN 피드백 도달 배율').listen();
     folder.add(this.sim, 'repulsorG', 0, 10, 0.1).name('반발자 G').listen();
     folder.add(this.sim, 'freezerDamp', 0.5, 0.999, 0.001).name('동결자 감쇠').listen();
     folder.add(this.sim, 'maxParticleSpeed', 0, 40, 0.5).name('입자 속도 캡').listen();
@@ -431,6 +435,9 @@ export class Controls {
     }
     if (eff.type === 'blackhole') {
       folder.add(eff, 'consumed').name('Consumed').disable().listen();
+      if (eff.accretionLum !== undefined) {
+        folder.add(eff, 'accretionLum', 0, 1, 0.001).name('강착 활동도 (AGN)').disable().listen();
+      }
     }
 
     // Science readout — properties of the body that don't change frame-to-frame

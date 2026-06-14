@@ -142,14 +142,21 @@ export class EffectorRenderer {
         (view.mat.uniforms.uColor.value as THREE.Color).setRGB(tinted[0], tinted[1], tinted[2]);
       }
 
-      // BH accretion activity: low-pass filter of consumed-per-frame so the
-      // glow ramps up smoothly while gas is falling in (AGN/quasar mode) and
-      // fades out when the BH is dormant.
+      // BH accretion activity drives the AGN/quasar glow. Prefer the sim's
+      // physically-smoothed accretionLum (the very same quantity that powers
+      // AGN radiation-pressure feedback), so what you see — a bright quasar —
+      // is exactly what's blowing the surrounding gas away. Fall back to a
+      // consumed-per-frame low-pass for any BH predating that field.
       if (eff.type === 'blackhole' && view.mat.uniforms.uAccretion) {
-        const lastConsumed = view.lastConsumed ?? eff.consumed;
-        const delta = Math.max(0, eff.consumed - lastConsumed);
-        view.lastConsumed = eff.consumed;
-        const target = Math.min(1, delta * 0.35);
+        let target: number;
+        if (eff.accretionLum !== undefined) {
+          target = eff.accretionLum;
+        } else {
+          const lastConsumed = view.lastConsumed ?? eff.consumed;
+          const delta = Math.max(0, eff.consumed - lastConsumed);
+          view.lastConsumed = eff.consumed;
+          target = Math.min(1, delta * 0.35);
+        }
         const prev = view.accretion ?? 0;
         const smoothed = prev * 0.85 + target * 0.15;
         view.accretion = smoothed;

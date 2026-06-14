@@ -108,6 +108,14 @@ export interface Effector {
   temperatureK?: number;
   /** Bolometric luminosity in solar units (L⊙). Drives PointLight intensity. */
   luminositySolar?: number;
+  /** Black-hole accretion activity ∈ [0,1] — exponentially-smoothed proxy for
+   *  the accretion luminosity. Rises while gas is falling in, decays when the
+   *  BH starves. Drives both AGN radiation-pressure feedback (effectors.ts) and
+   *  the renderer's quasar glow. Only meaningful for type === 'blackhole'. */
+  accretionLum?: number;
+  /** Scratch: baryon mass consumed by a BH in the current sim step. Reset to 0
+   *  each step after it has been folded into accretionLum. */
+  accretedThisStep?: number;
 }
 
 interface PairParams {
@@ -206,6 +214,34 @@ export class Simulator {
   starConsumeRadiusMul = 0.35;
   bhInspiralRate = 0.12;
   bhInspiralRange = 3;
+
+  // ── Radiative feedback ────────────────────────────────────────────────────
+  // The missing return arm of the baryon cycle: luminous bodies push gas back
+  // out, regulating the runaway collapse that the gravity/cooling side drives.
+  //
+  // Stellar winds: radiation pressure from a star pushes nearby GAS (not dark
+  // matter — radiation doesn't couple to DM) radially outward, scaled by
+  // bolometric luminosity (Eddington-like, so the effect rises steeply with
+  // mass via L ∝ M^3.5). 0 disables. Tuned so rare O/B stars go locally
+  // super-Eddington and disrupt their birth nursery while the low-mass IMF
+  // bulk (L ≲ 1 L⊙) leaves star formation globally intact.
+  stellarWind = 0.25;
+  // Wind reach as a multiple of the star's visual radius (gas beyond is unlit).
+  stellarWindRange = 5;
+
+  // AGN feedback: an accreting black hole radiates, and that radiation pressure
+  // drives surrounding gas outward ∝ its accretion activity. This self-limits
+  // accretion (Eddington-like), producing a duty cycle: feed → brighten → blow
+  // gas away → starve → dim → gas falls back. 0 disables.
+  bhFeedback = 14;
+  // AGN radiation reach as a multiple of the BH radius (extends past the purely
+  // gravitational capture zone, since photons travel farther than the horizon).
+  bhFeedbackRange = 6;
+  // How sharply consumed mass this step maps to accretion activity (saturating).
+  bhAccretionResponse = 3.0;
+  // Rise/decay timescale (sim sec) of accretion activity → sets the duty cycle.
+  bhAccretionTau = 2.0;
+
   readonly effectors: Effector[] = [];
   onEffectorRemoved: ((eff: Effector, reason: 'merged' | 'consumed' | 'manual') => void) | null = null;
 
@@ -756,7 +792,11 @@ export class Simulator {
       e.name = `★ S-${String(++this.starCounter).padStart(3, '0')}`;
       e.temperatureK = effectiveTemperature(e.strength);
       e.luminositySolar = luminosity(e.strength);
-    } else if (type === 'blackhole') e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
+    } else if (type === 'blackhole') {
+      e.name = `● BH-${String(++this.bhCounter).padStart(3, '0')}`;
+      e.accretionLum = 0;
+      e.accretedThisStep = 0;
+    }
     else if (type === 'nebula') e.name = `☁ N-${String(++this.nebulaCounter).padStart(3, '0')}`;
     else if (type === 'neutron_star') e.name = `⚪ NS-${String(++this.nsCounter).padStart(3, '0')}`;
     this.effectors.push(e);

@@ -84,7 +84,26 @@ export function integrateEffectors(sim: Simulator, dt: number): void {
   }
 
   if (sim.bhInspiralRate > 0) applyBHInspiral(sim, dt);
+  updateAccretionActivity(sim, dt);
   handleEffectorCollisions(sim);
+}
+
+// Fold the baryon mass each BH swallowed this step into a smoothed accretion
+// activity ∈ [0,1). The saturating 1−e^(−k·m) map means a single infalling
+// particle already lights the BH up a little, while a feeding frenzy pins it
+// near 1; the exponential relaxation toward that target (timescale τ) gives the
+// rise-and-fade duty cycle that drives both AGN feedback and the quasar glow.
+function updateAccretionActivity(sim: Simulator, dt: number): void {
+  const resp = sim.bhAccretionResponse;
+  const tau = sim.bhAccretionTau;
+  const a = tau > 0 ? Math.min(1, dt / tau) : 1;
+  for (const e of sim.effectors) {
+    if (e.type !== 'blackhole') continue;
+    const target = 1 - Math.exp(-resp * (e.accretedThisStep ?? 0));
+    const prev = e.accretionLum ?? 0;
+    e.accretionLum = prev + (target - prev) * a;
+    e.accretedThisStep = 0;
+  }
 }
 
 function applyBHInspiral(sim: Simulator, dt: number): void {
@@ -328,6 +347,22 @@ function applyBlackHole(sim: Simulator, e: Effector, consume: Set<number>): void
   const r2influence = influence * influence;
   const fadeStart = influence * 0.85;
   const r2fade = fadeStart * fadeStart;
+
+  // AGN radiation-pressure feedback: an accreting BH radiates, pushing GAS
+  // outward ∝ its current accretion activity. The reach extends past the
+  // gravitational capture zone (photons travel farther than the horizon), so a
+  // bright quasar can hold off — and periodically expel — the gas feeding it.
+  // DM is skipped (collisionless to radiation), same as stellar winds.
+  const fbCoeff = sim.bhFeedback;
+  const lum = e.accretionLum ?? 0;
+  const fbActive = fbCoeff > 0 && lum > 1e-4;
+  const fbK = fbActive ? fbCoeff * lum : 0;
+  const fbReach = e.radius * sim.bhFeedbackRange;
+  const fbReach2 = fbReach * fbReach;
+  const maxReach2 = Math.max(r2influence, fbReach2);
+  const dmId = sim.dmSpeciesId;
+  let accreted = 0;
+
   for (let i = 0; i < sim.count; i++) {
     const dx = e.x - sim.positions[i * 3 + 0];
     const dy = e.y - sim.positions[i * 3 + 1];
@@ -336,21 +371,35 @@ function applyBlackHole(sim: Simulator, e: Effector, consume: Set<number>): void
     if (r2 < r2horizon) {
       consume.add(i);
       e.consumed++;
+      accreted += SPECIES[sim.species[i]].mass;
       continue;
     }
-    if (r2 > r2influence) continue;
-    let scale = 1;
-    if (r2 > r2fade) {
-      const r = Math.sqrt(r2);
-      scale = (influence - r) / (influence - fadeStart);
-    }
+    if (r2 > maxReach2) continue;
     const m = SPECIES[sim.species[i]].mass;
     const invR = 1 / Math.sqrt(r2 + eps2);
-    const f = G * e.strength * m * invR * invR * invR * scale;
-    sim.forces[i * 3 + 0] += f * dx;
-    sim.forces[i * 3 + 1] += f * dy;
-    sim.forces[i * 3 + 2] += f * dz;
+    const inv3 = invR * invR * invR;
+    // Gravitational infall (inward) within the capture zone, with edge fade.
+    if (r2 <= r2influence) {
+      let scale = 1;
+      if (r2 > r2fade) {
+        const r = Math.sqrt(r2);
+        scale = (influence - r) / (influence - fadeStart);
+      }
+      const f = G * e.strength * m * inv3 * scale;
+      sim.forces[i * 3 + 0] += f * dx;
+      sim.forces[i * 3 + 1] += f * dy;
+      sim.forces[i * 3 + 2] += f * dz;
+    }
+    // AGN wind (outward, −dx) on gas within the radiative reach.
+    if (fbActive && r2 <= fbReach2 && sim.species[i] !== dmId) {
+      const fw = fbK * m * inv3;
+      sim.forces[i * 3 + 0] -= fw * dx;
+      sim.forces[i * 3 + 1] -= fw * dy;
+      sim.forces[i * 3 + 2] -= fw * dz;
+    }
   }
+
+  e.accretedThisStep = (e.accretedThisStep ?? 0) + accreted;
 }
 
 function applyStar(sim: Simulator, e: Effector): void {
@@ -358,6 +407,22 @@ function applyStar(sim: Simulator, e: Effector): void {
   const eps2 = 0.5;
   const heatR2 = (e.radius * 3) * (e.radius * 3);
   const heatRate = sim.starHeatRate;
+
+  // Radiation-pressure wind: an outward push on GAS within reach, scaled by
+  // bolometric luminosity (Eddington-like — radiation/gravity ∝ L/M, and since
+  // L ∝ M^3.5 on the main sequence this rises steeply with mass). Rare O/B
+  // stars go super-Eddington locally and carve real HII-region wind bubbles,
+  // while the low-mass IMF bulk (L ≲ 1 L⊙) barely stirs its surroundings.
+  // Dark matter is deliberately skipped — it doesn't couple to radiation, so
+  // feedback segregates baryons from DM (gas blown out of the halo, DM stays).
+  const windCoeff = sim.stellarWind;
+  const lum = e.luminositySolar ?? 0;
+  const windActive = windCoeff > 0 && lum > 0;
+  const windK = windActive ? windCoeff * lum : 0;
+  const windReach = e.radius * sim.stellarWindRange;
+  const windReach2 = windReach * windReach;
+  const dmId = sim.dmSpeciesId;
+
   for (let i = 0; i < sim.count; i++) {
     const dx = e.x - sim.positions[i * 3 + 0];
     const dy = e.y - sim.positions[i * 3 + 1];
@@ -365,10 +430,18 @@ function applyStar(sim: Simulator, e: Effector): void {
     const r2 = dx * dx + dy * dy + dz * dz;
     const m = SPECIES[sim.species[i]].mass;
     const invR = 1 / Math.sqrt(r2 + eps2);
-    const f = G * e.strength * m * invR * invR * invR;
+    const inv3 = invR * invR * invR;
+    const f = G * e.strength * m * inv3;
     sim.forces[i * 3 + 0] += f * dx;
     sim.forces[i * 3 + 1] += f * dy;
     sim.forces[i * 3 + 2] += f * dz;
+    // Outward radiation pressure (−dx points away from the star) ∝ L^(1/3)/r².
+    if (windActive && r2 < windReach2 && sim.species[i] !== dmId) {
+      const fw = windK * m * inv3;
+      sim.forces[i * 3 + 0] -= fw * dx;
+      sim.forces[i * 3 + 1] -= fw * dy;
+      sim.forces[i * 3 + 2] -= fw * dz;
+    }
     if (r2 < heatR2) {
       const boost = 1 + heatRate * 0.01;
       sim.velocities[i * 3 + 0] *= boost;
