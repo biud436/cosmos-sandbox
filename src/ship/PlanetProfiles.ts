@@ -48,28 +48,28 @@ const ENV = '/textures/env';
 
 export const PLANET_PROFILES: PlanetProfile[] = [
   {
-    id: 'sun', label: '☀️ 태양', radius: 1.0, oblateness: 0.0,
+    id: 'sun', label: '태양', radius: 1.0, oblateness: 0.0,
     rotationPeriodSec: 220, axialTilt: 0.126, viewDistance: 4.7, selfLuminous: true,
     textures: { map: `${SOLAR}/sun.jpg` },
     atmosphere: { color: [1.0, 0.68, 0.28], thickness: 1.5, scale: 1.22 },
     caption: '태양 — G2V 항성 · 광구 입상반(granulation) · 자체 발광 + 코로나 글로우',
   },
   {
-    id: 'mercury', label: '☿ 수성', radius: 1.0, oblateness: 0.0,
+    id: 'mercury', label: '수성', radius: 1.0, oblateness: 0.0,
     rotationPeriodSec: 210, axialTilt: 0.0006, viewDistance: 2.9,
     textures: { map: `${SOLAR}/mercury.jpg`, bumpMap: `${SOLAR}/mercury_bump.jpg` },
     bumpScale: 0.035,
     caption: '수성 — 대기 없는 크레이터 암석 표면 · MESSENGER 색 지도 · 알베도 기복',
   },
   {
-    id: 'venus', label: '♀ 금성', radius: 1.0, oblateness: 0.0,
+    id: 'venus', label: '금성', radius: 1.0, oblateness: 0.0,
     rotationPeriodSec: -260, axialTilt: 0.046, viewDistance: 3.0,
     textures: { map: `${SOLAR}/venus.jpg` },
     atmosphere: { color: [0.96, 0.82, 0.5], thickness: 0.62, scale: 1.03 },
     caption: '금성 — 두꺼운 황산 구름에 완전히 덮인 대기 · 역자전',
   },
   {
-    id: 'earth', label: '🌍 지구', radius: 1.0, oblateness: 0.0033,
+    id: 'earth', label: '지구', radius: 1.0, oblateness: 0.0033,
     rotationPeriodSec: 140, axialTilt: 0.4101, viewDistance: 3.2,
     textures: {
       map: `${EARTH}/earth_day_4k.jpg`,
@@ -85,14 +85,14 @@ export const PLANET_PROFILES: PlanetProfile[] = [
     caption: '지구 — Blue Marble/Black Marble · 주야 경계 도시불빛 · 자전 구름 · 해양 정반사 · 달',
   },
   {
-    id: 'moon', label: '🌕 달', radius: 1.0, oblateness: 0.0,
+    id: 'moon', label: '달', radius: 1.0, oblateness: 0.0,
     rotationPeriodSec: 200, axialTilt: 0.026, viewDistance: 2.7,
     textures: { map: `${ENV}/moon_color_4k.jpg`, bumpMap: `${ENV}/moon_bump_4k.jpg` },
     bumpScale: 0.05,
     caption: '달 — LRO 색 지도 · 바다(현무암 평원)와 고지대 · 알베도 기복',
   },
   {
-    id: 'mars', label: '🔴 화성', radius: 1.0, oblateness: 0.0059,
+    id: 'mars', label: '화성', radius: 1.0, oblateness: 0.0059,
     rotationPeriodSec: 144, axialTilt: 0.4398, viewDistance: 3.0,
     textures: { map: `${MARS}/mars_color_4k.jpg`, bumpMap: `${MARS}/mars_bump_4k.jpg` },
     bumpScale: 0.03,
@@ -100,14 +100,14 @@ export const PLANET_PROFILES: PlanetProfile[] = [
     caption: '화성 — Viking/MGS 색 지도 · 얇은 CO₂ 헤이즈 · 알베도 기복 (MOLA 실측 기복은 후속)',
   },
   {
-    id: 'jupiter', label: '🟠 목성', radius: 1.0, oblateness: 0.065,
+    id: 'jupiter', label: '목성', radius: 1.0, oblateness: 0.065,
     rotationPeriodSec: 60, axialTilt: 0.054, viewDistance: 3.6,
     textures: { map: `${SOLAR}/jupiter.jpg` },
     atmosphere: { color: [0.92, 0.82, 0.62], thickness: 0.45, scale: 1.02 },
     caption: '목성 — 가스 거대행성 · 띠와 대적점 · 빠른 자전으로 적도 팽대',
   },
   {
-    id: 'saturn', label: '🪐 토성', radius: 1.0, oblateness: 0.098,
+    id: 'saturn', label: '토성', radius: 1.0, oblateness: 0.098,
     rotationPeriodSec: 64, axialTilt: 0.466, viewDistance: 6.0,
     textures: { map: `${SOLAR}/saturn.jpg` },
     atmosphere: { color: [0.95, 0.86, 0.66], thickness: 0.38, scale: 1.02 },
@@ -115,14 +115,14 @@ export const PLANET_PROFILES: PlanetProfile[] = [
     caption: '토성 — 가스 거대행성 · 실측 고리(카시니 간극 포함) · 26.7° 기울기',
   },
   {
-    id: 'uranus', label: '🔵 천왕성', radius: 1.0, oblateness: 0.023,
+    id: 'uranus', label: '천왕성', radius: 1.0, oblateness: 0.023,
     rotationPeriodSec: 90, axialTilt: 1.706, viewDistance: 3.2,
     textures: { map: `${SOLAR}/uranus.jpg` },
     atmosphere: { color: [0.6, 0.86, 0.9], thickness: 0.5, scale: 1.02 },
     caption: '천왕성 — 메탄 청록 대기 · 옆으로 누운 98° 자전축',
   },
   {
-    id: 'neptune', label: '🔷 해왕성', radius: 1.0, oblateness: 0.017,
+    id: 'neptune', label: '해왕성', radius: 1.0, oblateness: 0.017,
     rotationPeriodSec: 80, axialTilt: 0.494, viewDistance: 3.2,
     textures: { map: `${SOLAR}/neptune.jpg` },
     atmosphere: { color: [0.3, 0.46, 0.95], thickness: 0.55, scale: 1.02 },

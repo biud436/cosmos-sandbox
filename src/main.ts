@@ -212,8 +212,7 @@ const ppButtons = new Map<string, HTMLButtonElement>();
 for (const p of PLANET_PROFILES) {
   const btn = document.createElement('button');
   btn.textContent = p.label;
-  btn.style.cssText = 'cursor:pointer; padding:5px 8px; border-radius:6px; font-size:11px;'
-    + 'border:1px solid rgba(120,160,220,0.25); background:rgba(40,55,80,0.4); color:#cfe0ff;';
+  btn.className = 'pl-chip';
   btn.addEventListener('click', () => selectPlanetProfile(p.id));
   ppBodies.appendChild(btn);
   ppButtons.set(p.id, btn);
@@ -236,12 +235,7 @@ function selectPlanetProfile(id: string): void {
   planetLab.setProfile(profile);
   ppCaption.textContent = profile.caption;
   frameBody(profile.viewDistance);
-  for (const [bid, btn] of ppButtons) {
-    const on = bid === id;
-    btn.style.background = on ? 'rgba(60,110,200,0.45)' : 'rgba(40,55,80,0.4)';
-    btn.style.borderColor = on ? 'rgba(120,160,220,0.55)' : 'rgba(120,160,220,0.25)';
-    btn.style.color = on ? '#eaf2ff' : '#cfe0ff';
-  }
+  for (const [bid, btn] of ppButtons) btn.classList.toggle('active', bid === id);
 }
 
 function setPlanetMode(active: boolean): void {
@@ -264,7 +258,7 @@ function setPlanetMode(active: boolean): void {
 
     selectPlanetProfile(planetCurrentId); // sets the body + frames the camera
     planetPanel.style.display = 'block';
-    layout.log('🔭 정밀 행성 관측 모드 진입 — 태양계', 'event');
+    layout.log('정밀 행성 관측 모드 진입 — 태양계', 'event');
   } else {
     planetActive = false;
     modeManager.mode = 'sim';
@@ -275,9 +269,9 @@ function setPlanetMode(active: boolean): void {
     scene.camera.position.copy(savedOrbit.pos);
     scene.controls.target.copy(savedOrbit.target);
     scene.controls.update();
-    layout.log('🌌 시뮬레이션 시점 복귀');
+    layout.log('시뮬레이션 시점 복귀');
   }
-  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '🔭 정밀 관측';
+  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '정밀 관측';
 }
 
 ppExitBtn.addEventListener('click', () => setPlanetMode(false));
