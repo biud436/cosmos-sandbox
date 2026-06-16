@@ -4,7 +4,7 @@ import { loadSavedPreset, QualityPreset, QUALITY_LABELS, savePreset, settingsOf 
 import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
-import { PlanetLab } from './ship/PlanetLab';
+import { PlanetLab, interiorLayersOf } from './ship/PlanetLab';
 import { PLANET_PROFILES, profileById } from './ship/PlanetProfiles';
 import { generatePlanetSystem, planetClassLabel, planetPosition } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
@@ -193,50 +193,112 @@ shipMenu.bind(dex, {
 });
 
 // ---- Photoreal planet observation mode ('planet') -------------------------
-// An isolated lab scene showing one real body (Earth/Mars) from satellite
-// texture maps. Cosmic time freezes (see ModeManager); the shared OrbitControls
-// orbit the body at the lab origin. Fully separate from the particle universe.
+// An isolated lab scene rendering either the whole solar system (orrery, with
+// real Kepler orbits) or a single body close-up / interior cutaway. Cosmic
+// time freezes (see ModeManager); the shared OrbitControls orbit the lab
+// origin. Fully separate from the particle universe.
 let planetLab: PlanetLab | null = null;
 let planetActive = false;
-let planetCurrentId = 'earth';
+let planetCurrentId = 'orrery'; // body id, or 'orrery' for the system overview
+let planetInterior = false;
 const savedOrbit = { pos: new THREE.Vector3(), target: new THREE.Vector3(), min: 0, max: Infinity };
 
 const planetPanel = document.getElementById('planet-panel') as HTMLElement;
 const ppBodies = document.getElementById('pp-bodies') as HTMLElement;
-const ppExitBtn = document.getElementById('pp-exit') as HTMLButtonElement;
 const ppCaption = document.getElementById('pp-caption') as HTMLElement;
+const ppLayers = document.getElementById('pp-layers') as HTMLElement;
+const ppInteriorBtn = document.getElementById('pp-interior') as HTMLButtonElement;
+const ppExitBtn = document.getElementById('pp-exit') as HTMLButtonElement;
 const btnPlanet = document.getElementById('btn-planet') as HTMLButtonElement;
+const labCanvas = scene.renderer.domElement;
 const ppButtons = new Map<string, HTMLButtonElement>();
 
-// One selector button per body, built once from the profile list.
-for (const p of PLANET_PROFILES) {
+// Overview chip first, then one chip per body, built once.
+for (const entry of [{ id: 'orrery', label: '태양계 전체' }, ...PLANET_PROFILES]) {
   const btn = document.createElement('button');
-  btn.textContent = p.label;
+  btn.textContent = entry.label;
   btn.className = 'pl-chip';
-  btn.addEventListener('click', () => selectPlanetProfile(p.id));
+  btn.addEventListener('click', () => selectView(entry.id));
   ppBodies.appendChild(btn);
-  ppButtons.set(p.id, btn);
+  ppButtons.set(entry.id, btn);
 }
 
-/** Re-frame the camera to a body's standoff, preserving the current view angle. */
-function frameBody(distance: number): void {
-  const dir = scene.camera.position.clone().sub(scene.controls.target);
+// --- Cinematic dive-in: ease the camera to the target framing while the
+// canvas blurs/zooms, so switching bodies feels like being pulled in. ---
+let camTween: { fromP: THREE.Vector3; toP: THREE.Vector3; fromT: THREE.Vector3; toT: THREE.Vector3; t: number; dur: number } | null = null;
+const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
+
+function cameraFlyTo(toPos: THREE.Vector3, toTarget: THREE.Vector3, dur: number): void {
+  camTween = {
+    fromP: scene.camera.position.clone(), toP: toPos.clone(),
+    fromT: scene.controls.target.clone(), toT: toTarget.clone(), t: 0, dur,
+  };
+  scene.controls.enabled = false;
+  labCanvas.classList.add('pl-diving');
+}
+
+/** Camera position at `distance` from the origin, along `prefer` (or the
+ *  current view direction when omitted). */
+function standoff(distance: number, prefer?: THREE.Vector3): THREE.Vector3 {
+  const dir = prefer ? prefer.clone() : scene.camera.position.clone().sub(scene.controls.target);
   if (dir.lengthSq() < 1e-6) dir.set(0, 0.4, 1);
-  dir.normalize().multiplyScalar(distance);
-  scene.controls.target.set(0, 0, 0);
-  scene.camera.position.copy(dir);
-  scene.controls.update();
+  return dir.normalize().multiplyScalar(distance);
 }
 
-function selectPlanetProfile(id: string): void {
-  const profile = profileById(id);
-  if (!profile || !planetLab) return;
-  planetCurrentId = id;
-  planetLab.setProfile(profile);
-  ppCaption.textContent = profile.caption;
-  frameBody(profile.viewDistance);
-  for (const [bid, btn] of ppButtons) btn.classList.toggle('active', bid === id);
+function selectView(id: string): void {
+  if (!planetLab) return;
+  if (id === 'orrery') {
+    planetCurrentId = 'orrery';
+    planetInterior = false;
+    planetLab.showOrrery();
+    ppCaption.textContent = '태양계 — 실제 이심률·궤도경사 기반 케플러 궤도 (거리·주기는 가시화를 위해 압축됨)';
+    cameraFlyTo(standoff(16, new THREE.Vector3(0.25, 0.7, 1)), new THREE.Vector3(0, 0, 0), 1.1);
+  } else {
+    const profile = profileById(id);
+    if (!profile) return;
+    planetCurrentId = id;
+    planetLab.showBody(profile, planetInterior);
+    ppCaption.textContent = profile.caption;
+    const dist = planetInterior ? profile.viewDistance * 1.15 : profile.viewDistance;
+    // Angle the camera at the +x/+z cutaway wedge when showing the interior.
+    const dir = planetInterior ? new THREE.Vector3(1, 0.55, 1) : undefined;
+    cameraFlyTo(standoff(dist, dir), new THREE.Vector3(0, 0, 0), 0.9);
+  }
+  refreshPanel();
 }
+
+function refreshPanel(): void {
+  for (const [bid, btn] of ppButtons) btn.classList.toggle('active', bid === planetCurrentId);
+  const isBody = planetCurrentId !== 'orrery';
+  ppInteriorBtn.classList.toggle('hidden', !isBody);
+  ppInteriorBtn.classList.toggle('active', planetInterior && isBody);
+  ppInteriorBtn.textContent = planetInterior ? '표면 보기' : '내부 구조 보기';
+  // Layer legend (outermost first) when an interior is shown.
+  const showLayers = planetInterior && isBody;
+  ppLayers.classList.toggle('show', showLayers);
+  ppLayers.innerHTML = '';
+  if (showLayers) {
+    const layers = interiorLayersOf(planetCurrentId) ?? [];
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const L = layers[i];
+      const row = document.createElement('div');
+      row.className = 'pl-layer';
+      const sw = document.createElement('span');
+      sw.className = 'pl-swatch';
+      sw.style.background = '#' + L.color.toString(16).padStart(6, '0');
+      const name = document.createElement('span');
+      name.textContent = L.name;
+      row.append(sw, name);
+      ppLayers.appendChild(row);
+    }
+  }
+}
+
+ppInteriorBtn.addEventListener('click', () => {
+  if (planetCurrentId === 'orrery') return;
+  planetInterior = !planetInterior;
+  selectView(planetCurrentId);
+});
 
 function setPlanetMode(active: boolean): void {
   if (active === planetActive) return;
@@ -255,15 +317,20 @@ function setPlanetMode(active: boolean): void {
     scene.controls.enabled = true;
     scene.controls.minDistance = 1.25;
     scene.controls.maxDistance = 80;
+    labCanvas.style.transition = 'filter .5s ease, transform .5s ease';
 
-    selectPlanetProfile(planetCurrentId); // sets the body + frames the camera
+    selectView(planetCurrentId); // builds the view + dives the camera in
     planetPanel.style.display = 'block';
-    layout.log('정밀 행성 관측 모드 진입 — 태양계', 'event');
+    layout.log('태양계 관측 모드 진입', 'event');
   } else {
     planetActive = false;
     modeManager.mode = 'sim';
     planetPanel.style.display = 'none';
+    camTween = null;
+    labCanvas.classList.remove('pl-diving');
+    labCanvas.style.transition = '';
     // Restore the cosmological framing.
+    scene.controls.enabled = true;
     scene.controls.minDistance = savedOrbit.min;
     scene.controls.maxDistance = savedOrbit.max;
     scene.camera.position.copy(savedOrbit.pos);
@@ -271,7 +338,7 @@ function setPlanetMode(active: boolean): void {
     scene.controls.update();
     layout.log('시뮬레이션 시점 복귀');
   }
-  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '정밀 관측';
+  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '태양계';
 }
 
 ppExitBtn.addEventListener('click', () => setPlanetMode(false));
@@ -645,7 +712,20 @@ function loop(): void {
   // body and draw it with the shared camera/controls.
   if (planetActive && planetLab) {
     planetLab.update(tick.shipDt, scene.camera);
-    scene.controls.update();
+    if (camTween) {
+      camTween.t += tick.shipDt / camTween.dur;
+      const k = easeOutCubic(Math.min(1, camTween.t));
+      scene.camera.position.lerpVectors(camTween.fromP, camTween.toP, k);
+      scene.controls.target.lerpVectors(camTween.fromT, camTween.toT, k);
+      if (camTween.t >= 1) {
+        camTween = null;
+        labCanvas.classList.remove('pl-diving');
+        scene.controls.enabled = true;
+        scene.controls.update();
+      }
+    } else {
+      scene.controls.update();
+    }
     scene.renderer.render(planetLab.scene, scene.camera);
 
     frames++;

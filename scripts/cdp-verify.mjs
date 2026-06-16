@@ -40,23 +40,23 @@ const shoot = async (name) => {
   if (s.result?.data) { writeFileSync(`${OUTDIR}/planet-${name}.png`, Buffer.from(s.result.data, 'base64')); console.log('  shot', name); }
 };
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const clickChip = (label) => evalJs(`(() => { const b=[...document.querySelectorAll('#pp-bodies button')].find(x=>x.textContent.includes(${JSON.stringify(label)})); if(b){b.click(); return true;} return false; })()`);
+
 await send('Runtime.enable');
 await send('Log.enable');
 await send('Page.enable');
 await send('Page.navigate', { url: BASE });
-await new Promise((r) => setTimeout(r, 3500));
+await wait(3500);
 
 await evalJs(`document.getElementById('btn-planet').click()`);
-await new Promise((r) => setTimeout(r, 5000));
-await shoot('earth');
+await wait(5000); await shoot('orrery');           // default entry = system overview
 
-for (const spec of BODIES) {
-  const [name, label] = spec.split(':');
-  const clicked = await evalJs(`(() => { const b=[...document.querySelectorAll('#pp-bodies button')].find(x=>x.textContent.includes(${JSON.stringify(label)})); if(b){b.click(); return true;} return false; })()`);
-  console.log('  click', name, clicked.result?.value);
-  await new Promise((r) => setTimeout(r, 4500));
-  await shoot(name);
-}
+await clickChip('목성'); await wait(2500); await shoot('jupiter');        // dive-in
+await evalJs(`document.getElementById('pp-interior').click()`); await wait(2500); await shoot('jupiter-interior');
+await evalJs(`document.getElementById('pp-interior').click()`); await wait(1500); // back to surface
+await clickChip('지구'); await wait(2500); await shoot('earth');
+await clickChip('토성'); await wait(2500); await shoot('saturn');
 
 console.log('ERRORS:', errors.length ? '\n  ' + errors.slice(0, 25).join('\n  ') : 'none');
 ws.close();

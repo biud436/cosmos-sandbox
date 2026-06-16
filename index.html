@@ -106,6 +106,22 @@
         transition: background .12s ease, border-color .12s ease;
       }
       .pl-exit:hover { background: var(--accent-dim); border-color: var(--accent); }
+      .pl-toggle {
+        display: block; width: calc(100% - 24px); margin: 9px 12px 0;
+        padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 11px; font-family: inherit;
+        background: transparent; color: var(--text-dim); border: 1px solid var(--border);
+        transition: background .12s ease, color .12s ease, border-color .12s ease;
+      }
+      .pl-toggle:hover { background: var(--panel-hi); color: var(--text); }
+      .pl-toggle.active { background: var(--accent-dim); color: #fff; border-color: var(--accent); }
+      .pl-toggle.hidden { display: none; }
+      .pl-layers { padding: 6px 14px 2px; display: none; flex-direction: column; gap: 3px; }
+      .pl-layers.show { display: flex; }
+      .pl-layer { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--text-dim); }
+      .pl-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); }
+      /* cinematic dive-in transition on body/system change */
+      #viewport { overflow: hidden; }
+      #viewport canvas.pl-diving { filter: blur(5px) brightness(1.12); transform: scale(1.1); }
 
       #left   { grid-area: left;   }
       #center { grid-area: center; position: relative; background: #05060a; }
@@ -252,7 +268,7 @@
       <div id="toolbar" class="panel">
         <span class="title">COSMOS SANDBOX</span>
         <button id="btn-ship" title="우주선 조종 모드로 전환">우주선 조종</button>
-        <button id="btn-planet" title="정밀 행성 관측 모드 (태양계 실사)">정밀 관측</button>
+        <button id="btn-planet" title="태양계 관측 모드 (실사 텍스처 · 궤도 · 내부 구조)">태양계</button>
         <button id="btn-pause" title="시간 정지/재개 (Space)">⏸ Pause</button>
         <button id="btn-step" title="일시정지 상태에서 1틱 전진" disabled>⏭ Step</button>
         <button id="btn-reset" title="현재 분포로 재시작">↺ Reset</button>
@@ -294,12 +310,14 @@
         <div id="viewport"></div>
         <div id="planet-panel" style="display:none">
           <div class="pl-header">
-            <span class="pl-title">정밀 행성 관측</span>
+            <span class="pl-title">태양계</span>
             <span class="pl-sub">Solar System</span>
           </div>
           <div id="pp-bodies" class="pl-bodies"></div>
           <div id="pp-caption" class="pl-caption"></div>
-          <div class="pl-hint">드래그 회전 · 스크롤 확대</div>
+          <div id="pp-layers" class="pl-layers"></div>
+          <button id="pp-interior" class="pl-toggle">내부 구조 보기</button>
+          <div class="pl-hint">드래그 회전 · 스크롤 확대 · 천체 클릭 시 진입</div>
           <button id="pp-exit" class="pl-exit">시뮬레이션 복귀</button>
         </div>
       </div>
