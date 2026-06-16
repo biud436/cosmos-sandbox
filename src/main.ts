@@ -4,6 +4,8 @@ import { loadSavedPreset, QualityPreset, QUALITY_LABELS, savePreset, settingsOf 
 import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
+import { PlanetLab } from './ship/PlanetLab';
+import { profileById } from './ship/PlanetProfiles';
 import { generatePlanetSystem, planetClassLabel, planetPosition } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
 import { ShipHUD, formatRealDistance } from './ship/ShipHUD';
@@ -133,6 +135,7 @@ function flyTo(target: THREE.Vector3, standoff: number, label?: string): void {
 
 function setShipMode(active: boolean): void {
   if (active) {
+    if (planetActive) setPlanetMode(false); // the two modes are mutually exclusive
     modeManager.mode = 'ship';
     scene.setControllerMode('ship');
     ship.enable();
@@ -188,6 +191,77 @@ shipMenu.bind(dex, {
     layout.log('도감 초기화', 'info');
   },
 });
+
+// ---- Photoreal planet observation mode ('planet') -------------------------
+// An isolated lab scene showing one real body (Earth/Mars) from satellite
+// texture maps. Cosmic time freezes (see ModeManager); the shared OrbitControls
+// orbit the body at the lab origin. Fully separate from the particle universe.
+let planetLab: PlanetLab | null = null;
+let planetActive = false;
+const savedOrbit = { pos: new THREE.Vector3(), target: new THREE.Vector3(), min: 0, max: Infinity };
+
+const planetPanel = document.getElementById('planet-panel') as HTMLElement;
+const ppEarthBtn = document.getElementById('pp-earth') as HTMLButtonElement;
+const ppMarsBtn = document.getElementById('pp-mars') as HTMLButtonElement;
+const ppExitBtn = document.getElementById('pp-exit') as HTMLButtonElement;
+const ppCaption = document.getElementById('pp-caption') as HTMLElement;
+const btnPlanet = document.getElementById('btn-planet') as HTMLButtonElement;
+
+function selectPlanetProfile(id: string): void {
+  const profile = profileById(id);
+  if (!profile || !planetLab) return;
+  planetLab.setProfile(profile);
+  ppCaption.textContent = profile.caption;
+  for (const [bid, btn] of [['earth', ppEarthBtn], ['mars', ppMarsBtn]] as const) {
+    const on = bid === id;
+    btn.style.background = on ? 'rgba(60,110,200,0.35)' : 'rgba(40,55,80,0.4)';
+    btn.style.borderColor = on ? 'rgba(120,160,220,0.4)' : 'rgba(120,160,220,0.25)';
+  }
+}
+
+function setPlanetMode(active: boolean): void {
+  if (active === planetActive) return;
+  if (active) {
+    if (ship.enabled) setShipMode(false); // mutually exclusive with ship mode
+    if (!planetLab) planetLab = new PlanetLab(scene.renderer);
+    // Remember the cosmological camera/orbit framing so we can restore it.
+    savedOrbit.pos.copy(scene.camera.position);
+    savedOrbit.target.copy(scene.controls.target);
+    savedOrbit.min = scene.controls.minDistance;
+    savedOrbit.max = scene.controls.maxDistance;
+
+    planetActive = true;
+    modeManager.mode = 'planet';
+    scene.setControllerMode('orbit');
+    scene.controls.enabled = true;
+    scene.controls.target.set(0, 0, 0);
+    scene.controls.minDistance = 1.25;
+    scene.controls.maxDistance = 40;
+    scene.camera.position.set(0, 0.55, planetLab.standoff);
+    scene.controls.update();
+
+    selectPlanetProfile('earth');
+    planetPanel.style.display = 'block';
+    layout.log('🔭 정밀 행성 관측 모드 진입 — 지구', 'event');
+  } else {
+    planetActive = false;
+    modeManager.mode = 'sim';
+    planetPanel.style.display = 'none';
+    // Restore the cosmological framing.
+    scene.controls.minDistance = savedOrbit.min;
+    scene.controls.maxDistance = savedOrbit.max;
+    scene.camera.position.copy(savedOrbit.pos);
+    scene.controls.target.copy(savedOrbit.target);
+    scene.controls.update();
+    layout.log('🌌 시뮬레이션 시점 복귀');
+  }
+  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '🔭 정밀 관측';
+}
+
+ppEarthBtn.addEventListener('click', () => selectPlanetProfile('earth'));
+ppMarsBtn.addEventListener('click', () => selectPlanetProfile('mars'));
+ppExitBtn.addEventListener('click', () => setPlanetMode(false));
+btnPlanet.addEventListener('click', () => setPlanetMode(!planetActive));
 
 // Menu shortcuts in ship mode:
 //   Tab — open / close the menu (primary; edge-triggered, no auto-repeat).
@@ -360,6 +434,7 @@ rendererEl.addEventListener('pointerdown', (e) => {
   downTime = performance.now();
 });
 rendererEl.addEventListener('pointerup', (e) => {
+  if (planetActive) return; // clicks orbit the lab body, never the hidden universe
   const dx = e.clientX - downX;
   const dy = e.clientY - downY;
   const dt = performance.now() - downTime;
@@ -550,6 +625,27 @@ function loop(): void {
 
   const tick = modeManager.tick(elapsed);
   for (let s = 0; s < tick.simSteps; s++) sim.step(tick.simDt);
+
+  // Planet mode renders an isolated lab scene instead of the particle
+  // universe. Cosmic time is frozen (simSteps == 0), so we just animate the
+  // body and draw it with the shared camera/controls.
+  if (planetActive && planetLab) {
+    planetLab.update(tick.shipDt, scene.camera);
+    scene.controls.update();
+    scene.renderer.render(planetLab.scene, scene.camera);
+
+    frames++;
+    fpsTimer += elapsed;
+    if (fpsTimer >= 0.25) {
+      fps = frames / fpsTimer;
+      frames = 0;
+      fpsTimer = 0;
+      layout.updateStats(sim, fps);
+      scene.adaptPixelRatio(fps, 0.25);
+    }
+    requestAnimationFrame(loop);
+    return;
+  }
 
   if (ship.enabled) {
     ship.update(tick.shipDt);

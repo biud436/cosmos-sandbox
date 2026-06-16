@@ -10,8 +10,12 @@
 // past — handwave for what would otherwise be impossibly long journeys.
 //
 // 'warp' mode (Phase 4) freezes cosmic time entirely.
+//
+// 'planet' mode is the photoreal close-up: a single real body (Earth/Mars)
+// rendered from texture maps in an isolated lab scene. Cosmic time is frozen
+// just like ship/warp — the particle universe pauses while you observe.
 
-export type SimMode = 'sim' | 'ship' | 'warp';
+export type SimMode = 'sim' | 'ship' | 'warp' | 'planet';
 
 export interface ModeTick {
   /** How many sim.step() calls to make this frame. */
@@ -49,7 +53,7 @@ export class ModeManager {
     // years (and trigger runaway Hubble expansion) during what is, from
     // the cockpit, a few real seconds of flight. Switch back to sim mode
     // to advance the universe. Warp also freezes cosmic time.
-    if (this.mode === 'ship' || this.mode === 'warp') {
+    if (this.mode === 'ship' || this.mode === 'warp' || this.mode === 'planet') {
       return { simSteps: 0, simDt: this.internalDt, shipDt };
     }
     if (this.paused || this.timeScale <= 0) {

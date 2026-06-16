@@ -4,3 +4,8 @@ dist
 *.log
 .vite
 .claude/scheduled_tasks.lock
+
+# Planet textures: ship the 4K base (committed) but keep the 8K hero
+# originals out of the repo — reproduce them anytime with
+# `bash scripts/fetch-textures.sh`.
+public/textures/**/*_8k.*
