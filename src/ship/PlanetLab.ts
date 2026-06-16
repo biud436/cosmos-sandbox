@@ -31,12 +31,15 @@ const ORBITS: Record<string, { a: number; e: number; incDeg: number }> = {
 };
 const ORRERY_ORDER = ['mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'];
 
-// Compress the absurd real range (0.39–30 AU) to a viewable orbit radius while
-// preserving ordering: r = 1.7 + 2.05·√a. Periods then follow Kepler's 3rd law
-// for the *displayed* radii (T ∝ r^1.5), so motion is self-consistent (inner
-// fast, outer slow) and obeys the 2nd law via the eccentric-anomaly solve.
-function orbitDisplayRadius(a: number): number { return 1.7 + 2.05 * Math.sqrt(a); }
-const ORRERY_PERIOD_K = 24 / Math.pow(orbitDisplayRadius(1.0), 1.5); // Earth ≈ 24s
+export type OrreryScale = 'real' | 'compact';
+
+// Two orrery distance scales:
+//   'real'    — orbit radius ∝ real semi-major axis (AU), so the vast gaps of
+//               the outer system are honest. Inner planets cluster near the
+//               Sun; you zoom/scroll to inspect them.
+//   'compact' — √a compression so all eight planets read at once (schematic).
+const REAL_AU = 2.4;                 // world units per AU in 'real' mode
+const COMPACT_EARTH_R = 1.7 + 2.05;  // Earth's display radius in 'compact' mode
 
 // Exaggerated planet sizes for the orrery (true-to-scale would be invisible).
 function orreryBodyRadius(realEarthRadii: number): number {
@@ -142,6 +145,7 @@ export class PlanetLab {
   private bodyGroup: THREE.Group | null = null;
   private orreryGroup: THREE.Group | null = null;
   private orreryPlanets: OrreryPlanet[] = [];
+  private orreryScale: OrreryScale = 'real';
   private currentId: string | null = null;
 
   private spins: SpinTarget[] = [];
@@ -293,15 +297,15 @@ export class PlanetLab {
 
     ORRERY_ORDER.forEach((id, idx) => {
       const el = ORBITS[id];
-      const aDisp = orbitDisplayRadius(el.a);
+      const aDisp = this.orreryRadius(el.a);
       const incRad = THREE.MathUtils.degToRad(el.incDeg);
       const argPeri = idx * 1.13;
       const phase0 = idx * 0.74;
-      const period = ORRERY_PERIOD_K * Math.pow(aDisp, 1.5);
+      const period = this.orreryPeriod(aDisp);
 
       group.add(this.makeOrbitLine(aDisp, el.e, incRad, argPeri, orbitMat));
 
-      const vr = orreryBodyRadius(REAL_RADII[id] ?? 1);
+      const vr = orreryBodyRadius(REAL_RADII[id] ?? 1) * (this.orreryScale === 'real' ? 1.7 : 1.0);
       const planet = new THREE.Mesh(
         new THREE.SphereGeometry(vr, 32, 24),
         new THREE.MeshBasicMaterial({ map: this.loadTexture(this.orreryTexPath(id), true) }),
@@ -322,6 +326,46 @@ export class PlanetLab {
   private orreryTexPath(id: string): string {
     if (id === 'earth') return '/textures/earth/earth_day_4k.jpg';
     return `/textures/solar/${id}.jpg`;
+  }
+
+  private orreryRadius(a: number): number {
+    return this.orreryScale === 'real' ? 0.6 + REAL_AU * a : 1.7 + 2.05 * Math.sqrt(a);
+  }
+
+  private orreryPeriod(displayRadius: number): number {
+    // 'real': linear in distance (sped up so distant planets still drift
+    // visibly while staying inner-fast/outer-slow). 'compact': Kepler's 3rd
+    // law for the displayed radii.
+    if (this.orreryScale === 'real') return 6 * displayRadius;
+    return (24 / Math.pow(COMPACT_EARTH_R, 1.5)) * Math.pow(displayRadius, 1.5);
+  }
+
+  get orreryScaleMode(): OrreryScale { return this.orreryScale; }
+
+  /** Suggested camera standoff + zoom-out limit for the current scale. */
+  get orreryFraming(): { standoff: number; maxDistance: number } {
+    return this.orreryScale === 'real' ? { standoff: 92, maxDistance: 260 } : { standoff: 16, maxDistance: 80 };
+  }
+
+  setOrreryScale(scale: OrreryScale): void {
+    if (scale === this.orreryScale) return;
+    this.orreryScale = scale;
+    this.disposeOrrery();
+    if (this.view === 'orrery') this.showOrrery();
+  }
+
+  private disposeOrrery(): void {
+    if (!this.orreryGroup) return;
+    this.orreryGroup.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else if (mat) mat.dispose();
+    });
+    this.scene.remove(this.orreryGroup);
+    this.orreryGroup = null;
+    this.orreryPlanets = [];
   }
 
   private makeOrbitLine(aDisp: number, e: number, incRad: number, argPeri: number, mat: THREE.LineBasicMaterial): THREE.LineLoop {
@@ -495,6 +539,7 @@ export class PlanetLab {
 
   dispose(): void {
     this.disposeBody();
+    this.disposeOrrery();
     for (const tex of this.texCache.values()) tex.dispose();
     this.texCache.clear();
     const bg = this.scene.background;

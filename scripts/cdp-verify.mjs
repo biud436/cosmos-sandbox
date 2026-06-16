@@ -50,13 +50,12 @@ await send('Page.navigate', { url: BASE });
 await wait(3500);
 
 await evalJs(`document.getElementById('btn-planet').click()`);
-await wait(5000); await shoot('orrery');           // default entry = system overview
+await wait(5000); await shoot('orrery-real');      // default = realistic AU-proportional distances
 
-await clickChip('목성'); await wait(2500); await shoot('jupiter');        // dive-in
+await evalJs(`document.getElementById('pp-scale').click()`); await wait(3000); await shoot('orrery-compact');
+await evalJs(`document.getElementById('pp-scale').click()`); await wait(2500); // back to real
+await clickChip('목성'); await wait(2500); await shoot('jupiter');        // dive-in still works
 await evalJs(`document.getElementById('pp-interior').click()`); await wait(2500); await shoot('jupiter-interior');
-await evalJs(`document.getElementById('pp-interior').click()`); await wait(1500); // back to surface
-await clickChip('지구'); await wait(2500); await shoot('earth');
-await clickChip('토성'); await wait(2500); await shoot('saturn');
 
 console.log('ERRORS:', errors.length ? '\n  ' + errors.slice(0, 25).join('\n  ') : 'none');
 ws.close();

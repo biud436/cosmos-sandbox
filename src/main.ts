@@ -208,6 +208,7 @@ const ppBodies = document.getElementById('pp-bodies') as HTMLElement;
 const ppCaption = document.getElementById('pp-caption') as HTMLElement;
 const ppLayers = document.getElementById('pp-layers') as HTMLElement;
 const ppInteriorBtn = document.getElementById('pp-interior') as HTMLButtonElement;
+const ppScaleBtn = document.getElementById('pp-scale') as HTMLButtonElement;
 const ppExitBtn = document.getElementById('pp-exit') as HTMLButtonElement;
 const btnPlanet = document.getElementById('btn-planet') as HTMLButtonElement;
 const labCanvas = scene.renderer.domElement;
@@ -251,12 +252,17 @@ function selectView(id: string): void {
     planetCurrentId = 'orrery';
     planetInterior = false;
     planetLab.showOrrery();
-    ppCaption.textContent = '태양계 — 실제 이심률·궤도경사 기반 케플러 궤도 (거리·주기는 가시화를 위해 압축됨)';
-    cameraFlyTo(standoff(16, new THREE.Vector3(0.25, 0.7, 1)), new THREE.Vector3(0, 0, 0), 1.1);
+    const f = planetLab.orreryFraming;
+    scene.controls.maxDistance = f.maxDistance;
+    ppCaption.textContent = planetLab.orreryScaleMode === 'real'
+      ? '태양계 — 실제 거리 비율(AU 비례) · 케플러 궤도. 바깥 행성일수록 멀어 작게 보입니다 (스크롤로 확대)'
+      : '태양계 — 한눈에 보기용 압축 거리 · 실제 이심률·궤도경사 기반 케플러 궤도';
+    cameraFlyTo(standoff(f.standoff, new THREE.Vector3(0.25, 0.7, 1)), new THREE.Vector3(0, 0, 0), 1.2);
   } else {
     const profile = profileById(id);
     if (!profile) return;
     planetCurrentId = id;
+    scene.controls.maxDistance = 80;
     planetLab.showBody(profile, planetInterior);
     ppCaption.textContent = profile.caption;
     const dist = planetInterior ? profile.viewDistance * 1.15 : profile.viewDistance;
@@ -273,6 +279,9 @@ function refreshPanel(): void {
   ppInteriorBtn.classList.toggle('hidden', !isBody);
   ppInteriorBtn.classList.toggle('active', planetInterior && isBody);
   ppInteriorBtn.textContent = planetInterior ? '표면 보기' : '내부 구조 보기';
+  // Distance-scale toggle is orrery-only.
+  ppScaleBtn.classList.toggle('hidden', isBody);
+  if (planetLab) ppScaleBtn.textContent = planetLab.orreryScaleMode === 'real' ? '거리: 압축 보기로' : '거리: 실척 보기로';
   // Layer legend (outermost first) when an interior is shown.
   const showLayers = planetInterior && isBody;
   ppLayers.classList.toggle('show', showLayers);
@@ -298,6 +307,12 @@ ppInteriorBtn.addEventListener('click', () => {
   if (planetCurrentId === 'orrery') return;
   planetInterior = !planetInterior;
   selectView(planetCurrentId);
+});
+
+ppScaleBtn.addEventListener('click', () => {
+  if (planetCurrentId !== 'orrery' || !planetLab) return;
+  planetLab.setOrreryScale(planetLab.orreryScaleMode === 'real' ? 'compact' : 'real');
+  selectView('orrery'); // rebuild framing + caption for the new scale
 });
 
 function setPlanetMode(active: boolean): void {
