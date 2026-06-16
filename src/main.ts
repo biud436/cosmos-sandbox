@@ -5,7 +5,7 @@ import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
 import { PlanetLab } from './ship/PlanetLab';
-import { profileById } from './ship/PlanetProfiles';
+import { PLANET_PROFILES, profileById } from './ship/PlanetProfiles';
 import { generatePlanetSystem, planetClassLabel, planetPosition } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
 import { ShipHUD, formatRealDistance } from './ship/ShipHUD';
@@ -198,24 +198,49 @@ shipMenu.bind(dex, {
 // orbit the body at the lab origin. Fully separate from the particle universe.
 let planetLab: PlanetLab | null = null;
 let planetActive = false;
+let planetCurrentId = 'earth';
 const savedOrbit = { pos: new THREE.Vector3(), target: new THREE.Vector3(), min: 0, max: Infinity };
 
 const planetPanel = document.getElementById('planet-panel') as HTMLElement;
-const ppEarthBtn = document.getElementById('pp-earth') as HTMLButtonElement;
-const ppMarsBtn = document.getElementById('pp-mars') as HTMLButtonElement;
+const ppBodies = document.getElementById('pp-bodies') as HTMLElement;
 const ppExitBtn = document.getElementById('pp-exit') as HTMLButtonElement;
 const ppCaption = document.getElementById('pp-caption') as HTMLElement;
 const btnPlanet = document.getElementById('btn-planet') as HTMLButtonElement;
+const ppButtons = new Map<string, HTMLButtonElement>();
+
+// One selector button per body, built once from the profile list.
+for (const p of PLANET_PROFILES) {
+  const btn = document.createElement('button');
+  btn.textContent = p.label;
+  btn.style.cssText = 'cursor:pointer; padding:5px 8px; border-radius:6px; font-size:11px;'
+    + 'border:1px solid rgba(120,160,220,0.25); background:rgba(40,55,80,0.4); color:#cfe0ff;';
+  btn.addEventListener('click', () => selectPlanetProfile(p.id));
+  ppBodies.appendChild(btn);
+  ppButtons.set(p.id, btn);
+}
+
+/** Re-frame the camera to a body's standoff, preserving the current view angle. */
+function frameBody(distance: number): void {
+  const dir = scene.camera.position.clone().sub(scene.controls.target);
+  if (dir.lengthSq() < 1e-6) dir.set(0, 0.4, 1);
+  dir.normalize().multiplyScalar(distance);
+  scene.controls.target.set(0, 0, 0);
+  scene.camera.position.copy(dir);
+  scene.controls.update();
+}
 
 function selectPlanetProfile(id: string): void {
   const profile = profileById(id);
   if (!profile || !planetLab) return;
+  planetCurrentId = id;
   planetLab.setProfile(profile);
   ppCaption.textContent = profile.caption;
-  for (const [bid, btn] of [['earth', ppEarthBtn], ['mars', ppMarsBtn]] as const) {
+  frameBody(profile.viewDistance);
+  for (const [bid, btn] of ppButtons) {
     const on = bid === id;
-    btn.style.background = on ? 'rgba(60,110,200,0.35)' : 'rgba(40,55,80,0.4)';
-    btn.style.borderColor = on ? 'rgba(120,160,220,0.4)' : 'rgba(120,160,220,0.25)';
+    btn.style.background = on ? 'rgba(60,110,200,0.45)' : 'rgba(40,55,80,0.4)';
+    btn.style.borderColor = on ? 'rgba(120,160,220,0.55)' : 'rgba(120,160,220,0.25)';
+    btn.style.color = on ? '#eaf2ff' : '#cfe0ff';
   }
 }
 
@@ -234,15 +259,12 @@ function setPlanetMode(active: boolean): void {
     modeManager.mode = 'planet';
     scene.setControllerMode('orbit');
     scene.controls.enabled = true;
-    scene.controls.target.set(0, 0, 0);
     scene.controls.minDistance = 1.25;
-    scene.controls.maxDistance = 40;
-    scene.camera.position.set(0, 0.55, planetLab.standoff);
-    scene.controls.update();
+    scene.controls.maxDistance = 80;
 
-    selectPlanetProfile('earth');
+    selectPlanetProfile(planetCurrentId); // sets the body + frames the camera
     planetPanel.style.display = 'block';
-    layout.log('🔭 정밀 행성 관측 모드 진입 — 지구', 'event');
+    layout.log('🔭 정밀 행성 관측 모드 진입 — 태양계', 'event');
   } else {
     planetActive = false;
     modeManager.mode = 'sim';
@@ -258,8 +280,6 @@ function setPlanetMode(active: boolean): void {
   btnPlanet.textContent = planetActive ? '시뮬 복귀' : '🔭 정밀 관측';
 }
 
-ppEarthBtn.addEventListener('click', () => selectPlanetProfile('earth'));
-ppMarsBtn.addEventListener('click', () => selectPlanetProfile('mars'));
 ppExitBtn.addEventListener('click', () => setPlanetMode(false));
 btnPlanet.addEventListener('click', () => setPlanetMode(!planetActive));
 

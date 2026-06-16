@@ -120,7 +120,8 @@ export class PlanetLab {
           uColor: { value: new THREE.Color(a.color[0], a.color[1], a.color[2]) },
           uThickness: { value: a.thickness },
           uSunDir: { value: SUN_DIR.clone() }, // world-space, constant
-          uHasSun: { value: 1 },
+          // The Sun's "atmosphere" is a uniform corona (no day/night bias).
+          uHasSun: { value: profile.selfLuminous ? 0 : 1 },
         },
         vertexShader: ATMOSPHERE_VERT,
         fragmentShader: ATMOSPHERE_FRAG,
@@ -130,6 +131,12 @@ export class PlanetLab {
       atmo.scale.set(as, as, as);
       atmo.frustumCulled = false;
       tilt.add(atmo);
+    }
+
+    // --- Ring (Saturn) — lies in the body's equatorial plane, so it tips
+    //     with the axial tilt but does not spin with the planet. ---
+    if (profile.ring) {
+      tilt.add(this.makeRing(profile.ring, r));
     }
 
     // --- Moon ---
@@ -174,8 +181,43 @@ export class PlanetLab {
   /** Default camera standoff for framing a freshly-entered body. */
   get standoff(): number { return 3.0; }
 
-  private buildBodyMaterial(profile: PlanetProfile): THREE.MeshStandardMaterial {
+  /** Build a flat ring in the XZ plane with radial UVs (u = inner→outer), so
+   *  the equirectangular ring strip maps across the radius. */
+  private makeRing(ring: { map: string; inner: number; outer: number; opacity: number }, r: number): THREE.Mesh {
+    const inner = ring.inner * r;
+    const outer = ring.outer * r;
+    const geo = new THREE.RingGeometry(inner, outer, 180, 1);
+    const pos = geo.attributes.position;
+    const uv = geo.attributes.uv;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      tmp.fromBufferAttribute(pos, i);
+      uv.setXY(i, (tmp.length() - inner) / (outer - inner), 0.5);
+    }
+    uv.needsUpdate = true;
+    const mat = new THREE.MeshBasicMaterial({
+      map: this.loadTexture(ring.map, true),
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      opacity: ring.opacity,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = -Math.PI / 2; // RingGeometry is in XY; tip it into XZ (equatorial)
+    mesh.frustumCulled = false;
+    return mesh;
+  }
+
+  private buildBodyMaterial(profile: PlanetProfile): THREE.Material {
     const t = profile.textures;
+    this.setSunViewDir = null;
+
+    if (profile.selfLuminous) {
+      // The Sun emits its own light — render unlit so it stays uniformly bright
+      // regardless of the lab's directional sun (which lights the planets).
+      return new THREE.MeshBasicMaterial({ map: this.loadTexture(t.map, true) });
+    }
+
     const mat = new THREE.MeshStandardMaterial({
       map: this.loadTexture(t.map, true),
       roughness: 1.0,
@@ -183,8 +225,11 @@ export class PlanetLab {
     });
     if (t.normalMap) mat.normalMap = this.loadTexture(t.normalMap, false);
     if (t.roughnessMap) mat.roughnessMap = this.loadTexture(t.roughnessMap, false);
+    if (t.bumpMap) {
+      mat.bumpMap = this.loadTexture(t.bumpMap, false);
+      mat.bumpScale = profile.bumpScale ?? 0.03;
+    }
 
-    this.setSunViewDir = null;
     if (t.emissiveMap) {
       // City lights: emissive is added regardless of lighting, so we mask it
       // to the night hemisphere via dot(normal, sunDir) in onBeforeCompile.
