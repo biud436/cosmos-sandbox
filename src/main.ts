@@ -5,6 +5,7 @@ import { Scene } from './render/Scene';
 import { Dex } from './ship/Dex';
 import { ModeManager } from './ship/ModeManager';
 import { PlanetLab, interiorLayersOf } from './ship/PlanetLab';
+import { GAS_PALETTES } from './ship/shaders/jupiterGas';
 import { PLANET_PROFILES, profileById } from './ship/PlanetProfiles';
 import { generatePlanetSystem, planetClassLabel, planetPosition } from './ship/PlanetSystem';
 import { ShipController } from './ship/ShipController';
@@ -206,6 +207,7 @@ const savedOrbit = { pos: new THREE.Vector3(), target: new THREE.Vector3(), min:
 const planetPanel = document.getElementById('planet-panel') as HTMLElement;
 const ppBodies = document.getElementById('pp-bodies') as HTMLElement;
 const ppCaption = document.getElementById('pp-caption') as HTMLElement;
+const ppGas = document.getElementById('pp-gas') as HTMLElement;
 const ppLayers = document.getElementById('pp-layers') as HTMLElement;
 const ppInteriorBtn = document.getElementById('pp-interior') as HTMLButtonElement;
 const ppScaleBtn = document.getElementById('pp-scale') as HTMLButtonElement;
@@ -276,6 +278,10 @@ function selectView(id: string): void {
 function refreshPanel(): void {
   for (const [bid, btn] of ppButtons) btn.classList.toggle('active', bid === planetCurrentId);
   const isBody = planetCurrentId !== 'orrery';
+  // Procedural-gas live controls — only on a gas body's surface view.
+  const showGas = isBody && !planetInterior && !!planetLab?.hasGas;
+  ppGas.style.display = showGas ? 'flex' : 'none';
+  if (showGas) syncGasControls();
   ppInteriorBtn.classList.toggle('hidden', !isBody);
   ppInteriorBtn.classList.toggle('active', planetInterior && isBody);
   ppInteriorBtn.textContent = planetInterior ? '표면 보기' : '내부 구조 보기';
@@ -313,6 +319,95 @@ ppScaleBtn.addEventListener('click', () => {
   if (planetCurrentId !== 'orrery' || !planetLab) return;
   planetLab.setOrreryScale(planetLab.orreryScaleMode === 'real' ? 'compact' : 'real');
   selectView('orrery'); // rebuild framing + caption for the new scale
+});
+
+// --- Procedural-gas (목성) live controls: palette + turbulence/flow + a hint.
+// Built once; shown only while a procedural-gas body's surface is on screen.
+const gasPalChips = new Map<string, HTMLButtonElement>();
+let gasTurbSlider: HTMLInputElement;
+let gasFlowSlider: HTMLInputElement;
+{
+  const palLabel = document.createElement('div');
+  palLabel.className = 'pl-gas-label';
+  palLabel.textContent = '색상 팔레트';
+  const palRow = document.createElement('div');
+  palRow.className = 'pl-gas-pals';
+  for (const [key, { label }] of Object.entries(GAS_PALETTES)) {
+    const chip = document.createElement('button');
+    chip.className = 'pl-pal';
+    chip.textContent = label;
+    chip.addEventListener('click', () => {
+      if (!planetLab) return;
+      planetLab.setGasPalette(key);
+      syncGasControls();
+    });
+    palRow.appendChild(chip);
+    gasPalChips.set(key, chip);
+  }
+
+  const mkSlider = (label: string, min: number, max: number, step: number): HTMLInputElement => {
+    const row = document.createElement('div');
+    row.className = 'pl-slider';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min); input.max = String(max); input.step = String(step);
+    row.append(name, input);
+    ppGas.appendChild(row);
+    return input;
+  };
+
+  ppGas.append(palLabel, palRow);
+  gasTurbSlider = mkSlider('난류', 1.5, 6.0, 0.1);
+  gasFlowSlider = mkSlider('흐름', 0.0, 0.18, 0.005);
+  gasTurbSlider.addEventListener('input', () => planetLab?.setGasTurb(parseFloat(gasTurbSlider.value)));
+  gasFlowSlider.addEventListener('input', () => planetLab?.setGasFlow(parseFloat(gasFlowSlider.value)));
+
+  const hint = document.createElement('div');
+  hint.className = 'pl-gas-label';
+  hint.style.opacity = '0.6';
+  hint.textContent = '확대하면 가스 구름이 나타납니다 · 커서로 휘젓기';
+  ppGas.appendChild(hint);
+}
+
+function syncGasControls(): void {
+  if (!planetLab) return;
+  for (const [key, chip] of gasPalChips) chip.classList.toggle('active', key === planetLab.gasPalette);
+  gasTurbSlider.value = String(planetLab.getGasTurb());
+  gasFlowSlider.value = String(planetLab.getGasFlow());
+}
+
+// Pointer-stir: waving the cursor over a procedural-gas body injects swirls
+// that locally twist the cloud flow. Hover (button up) stirs at full strength;
+// while a button is held (OrbitControls rotating) we stir faintly so rotation
+// stays readable instead of fighting the stir.
+let lastStirMs = 0;
+let lastStirX = 0;
+let lastStirY = 0;
+const stirNdc = new THREE.Vector2();
+labCanvas.addEventListener('pointermove', (e) => {
+  if (!planetActive || !planetLab || !planetLab.hasGas || camTween) return;
+  // Only respond once the gas clouds are actually on screen (zoomed in). When
+  // far, the planet is the plain texture and the cursor shouldn't disturb it.
+  if (planetLab.gasDetail < 0.45) return;
+  const rect = labCanvas.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+  const now = performance.now();
+  if (now - lastStirMs < 45) return; // cap stir rate
+  const speed = Math.hypot(e.clientX - lastStirX, e.clientY - lastStirY);
+  lastStirX = e.clientX;
+  lastStirY = e.clientY;
+  if (speed < 2.5) return; // ignore tiny jitter so it doesn't twitch
+  lastStirMs = now;
+  // Gentle, and fading with the LOD blend so it eases off as gas thins out.
+  // Slower normalization (speed/110) means a brisk sweep, not a graze, stirs.
+  const strength = Math.min(1, speed / 110) * planetLab.gasDetail * (e.buttons !== 0 ? 0.2 : 1.0);
+  stirNdc.set(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  planetLab.stirGasFromScreen(stirNdc, scene.camera, strength);
 });
 
 function setPlanetMode(active: boolean): void {

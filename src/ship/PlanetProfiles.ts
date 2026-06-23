@@ -32,6 +32,10 @@ export interface PlanetProfile {
   };
   bumpScale?: number;
   emissiveIntensity?: number;
+  /** Render the body surface with the live procedural gas shader (animated,
+   *  interactive cloud bands) instead of a static texture map. The `textures.map`
+   *  is still used for the interior-cutaway outer shell. */
+  proceduralGas?: boolean;
   clouds?: { scale: number; rotationPeriodSec: number; opacity: number };
   atmosphere?: { color: [number, number, number]; thickness: number; scale: number };
   /** Planetary ring (Saturn). `map` is an equirectangular alpha strip mapped
@@ -103,8 +107,9 @@ export const PLANET_PROFILES: PlanetProfile[] = [
     id: 'jupiter', label: '목성', radius: 1.0, oblateness: 0.065,
     rotationPeriodSec: 60, axialTilt: 0.054, viewDistance: 3.6,
     textures: { map: `${SOLAR}/jupiter.jpg` },
+    proceduralGas: true,
     atmosphere: { color: [0.92, 0.82, 0.62], thickness: 0.45, scale: 1.02 },
-    caption: '목성 — 가스 거대행성 · 띠와 대적점 · 빠른 자전으로 적도 팽대',
+    caption: '목성 — 절차적 가스 대기(도메인 워프 난류) · 대적점 · 드래그로 휘젓기 · 색상 팔레트 전환',
   },
   {
     id: 'saturn', label: '토성', radius: 1.0, oblateness: 0.098,

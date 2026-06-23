@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PlanetProfile } from './PlanetProfiles';
 import { ATMOSPHERE_VERT, ATMOSPHERE_FRAG } from './shaders/atmosphere';
+import { JupiterGasMaterial, GAS_PALETTES } from './shaders/jupiterGas';
 
 // Isolated photoreal solar-system lab. Owns its own THREE.Scene so it can
 // render either:
@@ -155,6 +156,16 @@ export class PlanetLab {
   private elapsed = 0;
   private readonly tmpSunView = new THREE.Vector3();
 
+  // Live procedural gas-giant surface (Jupiter). `gasMat` drives the shader
+  // uniforms; `gasMesh` is the surface sphere kept around for pointer-stir
+  // raycasting. Both null unless the current body uses proceduralGas.
+  private gasMat: JupiterGasMaterial | null = null;
+  private gasMesh: THREE.Mesh | null = null;
+  private gasPaletteKey = 'jupiter';
+  private gasRadius = 1;       // world radius of the gas body, for the LOD ramp
+  private gasDetailValue = 0;  // last camera-distance LOD blend (0 tex .. 1 gas)
+  private readonly raycaster = new THREE.Raycaster();
+
   constructor(renderer: THREE.WebGLRenderer) {
     renderer.localClippingEnabled = true;
     this.maxAniso = renderer.capabilities.getMaxAnisotropy();
@@ -214,6 +225,7 @@ export class PlanetLab {
     planet.scale.set(r, squashY, r);
     tilt.add(planet);
     this.spins = [{ obj: planet, periodSec: profile.rotationPeriodSec }];
+    if (this.gasMat) { this.gasMesh = planet; this.gasRadius = r; } // for raycast + LOD
 
     if (profile.textures.cloudsMap && profile.clouds) {
       const cloudMat = new THREE.MeshStandardMaterial({
@@ -444,6 +456,15 @@ export class PlanetLab {
     const t = profile.textures;
     this.setSunViewDir = null;
 
+    if (profile.proceduralGas) {
+      const palette = (GAS_PALETTES[this.gasPaletteKey] ?? GAS_PALETTES.jupiter).palette;
+      this.gasMat = new JupiterGasMaterial(palette);
+      this.gasMat.setSun(SUN_DIR);
+      // Far view = the real texture; gas is blended in only on close approach.
+      this.gasMat.setMap(this.loadTexture(t.map, true));
+      return this.gasMat.material;
+    }
+
     if (profile.selfLuminous) {
       return new THREE.MeshBasicMaterial({ map: this.loadTexture(t.map, true) });
     }
@@ -493,12 +514,64 @@ export class PlanetLab {
 
     for (const s of this.spins) s.obj.rotation.y = (this.elapsed / s.periodSec) * TWO_PI;
     if (this.moonPivot) this.moonPivot.rotation.y = (this.elapsed / this.moonPeriodSec) * TWO_PI;
+    if (this.gasMat) {
+      this.gasMat.setTime(this.elapsed);
+      this.gasMat.setSun(SUN_DIR);
+      this.gasMat.update(dt);
+      // LOD: the body sits at the scene origin and OrbitControls targets it,
+      // so the camera distance is just its position length. The gas clouds
+      // fade in only once the planet dominates the view (≈ filling the frame)
+      // and the far view stays the plain photoreal texture.
+      const dist = camera.position.length();
+      const near = this.gasRadius * 1.7; // full gas at/closer than this
+      const far = this.gasRadius * 2.8;  // pure texture at/beyond this
+      let d = Math.max(0, Math.min(1, (far - dist) / (far - near)));
+      d = d * d * (3 - 2 * d); // smoothstep ease
+      this.gasDetailValue = d;
+      this.gasMat.setDetail(d);
+    }
     if (this.setSunViewDir) {
       camera.updateMatrixWorld();
       this.tmpSunView.copy(SUN_DIR).transformDirection(camera.matrixWorldInverse);
       this.setSunViewDir(this.tmpSunView);
     }
   }
+
+  // ---- Procedural gas interaction (Jupiter) ---------------------------------
+
+  /** True when the current body is rendered with the live gas shader. */
+  get hasGas(): boolean { return this.gasMat !== null && this.gasMesh !== null; }
+
+  /** Current camera-distance LOD blend: 0 = texture (far), 1 = gas (close). */
+  get gasDetail(): number { return this.gasDetailValue; }
+
+  get gasPalette(): string { return this.gasPaletteKey; }
+
+  /** Inject a swirl where a screen ray (NDC -1..1) hits the gas sphere.
+   *  Returns true if the ray hit the planet. */
+  stirGasFromScreen(ndc: THREE.Vector2, camera: THREE.Camera, strength: number): boolean {
+    if (!this.gasMat || !this.gasMesh) return false;
+    this.raycaster.setFromCamera(ndc, camera);
+    const hits = this.raycaster.intersectObject(this.gasMesh, false);
+    const uv = hits[0]?.uv;
+    if (!uv) return false;
+    // The hit UV is the same equirectangular coordinate the shader samples, so
+    // the vortex lands exactly under the cursor on the real cloud bands.
+    this.gasMat.stir(uv, strength);
+    return true;
+  }
+
+  /** Swap the live color palette without rebuilding the body. */
+  setGasPalette(key: string): void {
+    if (!GAS_PALETTES[key]) return;
+    this.gasPaletteKey = key;
+    if (this.gasMat) this.gasMat.applyPalette(GAS_PALETTES[key].palette);
+  }
+
+  setGasTurb(x: number): void { this.gasMat?.setTurb(x); }
+  setGasFlow(x: number): void { this.gasMat?.setFlow(x); }
+  getGasTurb(): number { return this.gasMat?.getTurb() ?? 0; }
+  getGasFlow(): number { return this.gasMat?.getFlow() ?? 0; }
 
   // ---- Disposal -------------------------------------------------------------
 
@@ -516,6 +589,11 @@ export class PlanetLab {
     this.spins = [];
     this.moonPivot = null;
     this.setSunViewDir = null;
+    // Gas material is disposed by the traverse above (it's a mesh material);
+    // just drop our references so stale stirs/raycasts can't target it.
+    this.gasMat = null;
+    this.gasMesh = null;
+    this.gasDetailValue = 0;
   }
 
   private loadTexture(path: string, srgb: boolean): THREE.Texture {

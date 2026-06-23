@@ -119,6 +119,21 @@
       .pl-layers.show { display: flex; }
       .pl-layer { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--text-dim); }
       .pl-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); }
+      /* procedural-gas (목성) live controls */
+      .pl-gas { padding: 9px 14px 2px; display: flex; flex-direction: column; gap: 8px; }
+      .pl-gas-label { font-size: 9px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); }
+      .pl-gas-pals { display: flex; flex-wrap: wrap; gap: 4px; }
+      .pl-pal {
+        appearance: none; cursor: pointer; font-family: inherit;
+        padding: 4px 8px; border-radius: 6px; font-size: 10.5px; line-height: 1;
+        background: transparent; color: var(--text-dim); border: 1px solid var(--border);
+        transition: background .12s ease, color .12s ease, border-color .12s ease;
+      }
+      .pl-pal:hover { background: var(--panel-hi); color: var(--text); }
+      .pl-pal.active { background: var(--accent-dim); color: #fff; border-color: var(--accent); }
+      .pl-slider { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); }
+      .pl-slider span { width: 38px; flex: none; }
+      .pl-slider input[type=range] { flex: 1; accent-color: var(--accent); height: 3px; }
       /* cinematic dive-in transition on body/system change */
       #viewport { overflow: hidden; }
       #viewport canvas.pl-diving { filter: blur(5px) brightness(1.12); transform: scale(1.1); }
@@ -315,6 +330,7 @@
           </div>
           <div id="pp-bodies" class="pl-bodies"></div>
           <div id="pp-caption" class="pl-caption"></div>
+          <div id="pp-gas" class="pl-gas" style="display:none"></div>
           <div id="pp-layers" class="pl-layers"></div>
           <button id="pp-scale" class="pl-toggle hidden">거리: 압축 보기</button>
           <button id="pp-interior" class="pl-toggle">내부 구조 보기</button>
