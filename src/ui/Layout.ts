@@ -33,9 +33,6 @@ export class Layout {
   private readonly eventLog = document.getElementById('event-log')!;
 
   private readonly hudFps = document.getElementById('hud-fps')!;
-  private readonly hudN = document.getElementById('hud-n')!;
-  private readonly hudT = document.getElementById('hud-t')!;
-  private readonly hudTime = document.getElementById('hud-time')!;
   private readonly sTime = document.getElementById('s-time')!;
   private readonly sScale = document.getElementById('s-scale')!;
   private readonly sTtarget = document.getElementById('s-ttarget')!;
@@ -231,14 +228,15 @@ export class Layout {
   }
 
   private setPausedUI(paused: boolean): void {
-    this.btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+    this.btnPause.textContent = paused ? '재개' : '정지';
     this.btnStep.disabled = !paused;
   }
 
   setShipUI(isShipMode: boolean): void {
     if (!this.btnShip) return;
-    this.btnShip.textContent = isShipMode ? '시뮬 복귀' : '우주선 조종';
+    this.btnShip.textContent = isShipMode ? '복귀' : '우주선';
     this.btnShip.title = isShipMode ? '시뮬레이션 시점으로 복귀' : '우주선 조종 모드로 전환';
+    this.btnShip.classList.toggle('active', isShipMode);
   }
 
   setPreset(name: string): void {
@@ -262,11 +260,8 @@ export class Layout {
     this.updateHistory(sim.firedEvents);
 
     this.hudFps.textContent = fps.toFixed(0);
-    this.hudN.textContent = String(stats.count);
-    this.hudT.textContent = stats.temperatureK.toFixed(0);
     const years = stats.simTime * this.yearsPerUnit;
     const formatted = formatCosmicTime(years);
-    this.hudTime.textContent = formatted;
 
     this.sTime.textContent = formatted;
     this.sEra.textContent = stats.currentEra;

@@ -98,6 +98,9 @@ export class Controls {
     this.buildEffectorPhysicsFolder();
     this.buildVisibilityFolder();
     this.applyPreset(PRESETS[0]);
+    // Start with every folder collapsed so the inspector reads as a tidy list
+    // of section titles rather than a wall of sliders — open one to tune it.
+    for (const f of this.gui.folders) f.close();
   }
 
   private injectFolderStyles(): void {
@@ -106,15 +109,14 @@ export class Controls {
     style.id = 'cosmos-gui-styles';
     style.textContent = `
       .lil-gui .folder.cosmos-reset-only > .title {
-        color: #ffaa55 !important;
-        background: rgba(255, 170, 85, 0.10) !important;
-        border-left: 3px solid #ffaa55 !important;
-        padding-left: 6px !important;
+        color: #eab464 !important;
+        border-left: 2px solid rgba(234, 180, 100, 0.7) !important;
+        padding-left: 7px !important;
       }
       .lil-gui .folder.cosmos-runtime > .title {
-        color: #88ddff !important;
-        border-left: 3px solid #88ddff !important;
-        padding-left: 6px !important;
+        color: #9bbcf0 !important;
+        border-left: 2px solid rgba(91, 157, 255, 0.55) !important;
+        padding-left: 7px !important;
       }
     `;
     document.head.appendChild(style);

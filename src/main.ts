@@ -448,7 +448,8 @@ function setPlanetMode(active: boolean): void {
     scene.controls.update();
     layout.log('시뮬레이션 시점 복귀');
   }
-  btnPlanet.textContent = planetActive ? '시뮬 복귀' : '태양계';
+  btnPlanet.textContent = planetActive ? '복귀' : '태양계';
+  btnPlanet.classList.toggle('active', planetActive);
 }
 
 ppExitBtn.addEventListener('click', () => setPlanetMode(false));

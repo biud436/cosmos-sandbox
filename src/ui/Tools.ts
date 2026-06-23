@@ -51,7 +51,7 @@ export class Tools {
     clearBtn.className = 'tool-action';
     clearBtn.id = 'tool-clear-all';
     clearBtn.title = '모든 효과기 제거';
-    clearBtn.textContent = 'Clear All';
+    clearBtn.textContent = '전체 삭제';
     clearBtn.addEventListener('click', () => this.cb.onClearAll());
     body.appendChild(clearBtn);
   }
